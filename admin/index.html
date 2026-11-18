@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>營運儀表板 · AURAFIT 後台</title>
   <link rel="stylesheet" href="/css/style.css" />
-  <link rel="stylesheet" href="/admin/admin.css" />
+  <link rel="stylesheet" href="admin.css" />
 </head>
 <body class="admin">
   <div class="admin-layout">
@@ -56,7 +56,7 @@
   </div>
 
   <script src="/js/app.js"></script>
-  <script src="/admin/admin.js"></script>
+  <script src="admin.js"></script>
   <script>
     if (requireAdmin()) {
       renderSidebar('dashboard');
@@ -77,7 +77,7 @@
         document.getElementById('recent-orders').innerHTML = s.recentOrders.length
           ? s.recentOrders.map((o) => `
               <tr>
-                <td><a href="/admin/orders.html?focus=${o.id}" style="font-weight:600">#${o.id}</a></td>
+                <td><a href="orders.html?focus=${o.id}" style="font-weight:600">#${o.id}</a></td>
                 <td>${escapeHtml(o.customer_name)}</td>
                 <td>${formatMoney(o.total)}</td>
                 <td>${statusBadge(o.status)}</td>

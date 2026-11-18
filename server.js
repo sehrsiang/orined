@@ -11,6 +11,15 @@ app.use(express.json());
 /** 包裝非同步的路由處理函式，將錯誤交給 Express 的錯誤處理中介層。 */
 const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
+// ---------- 後台頁面路徑 ----------
+// 可用環境變數 ADMIN_PATH 覆寫（例如 /manage），預設 /sehrsiang。
+const ADMIN_PATH = (() => {
+  let p = String(process.env.ADMIN_PATH || '/sehrsiang').trim();
+  if (!p.startsWith('/')) p = '/' + p;
+  p = p.replace(/\/+$/, '');
+  return p || '/sehrsiang';
+})();
+
 // ---------- 工具函式 ----------
 
 const ORDER_STATUSES = ['pending', 'paid', 'shipped', 'completed', 'cancelled'];
@@ -160,6 +169,7 @@ app.get('/api/site', ah(async (req, res) => {
   res.json({
     site_name: await getSetting(SITE_NAME_KEY, DEFAULT_SITE_NAME),
     site_name_style: await getSetting(BRAND_STYLE_KEY, DEFAULT_BRAND_STYLE),
+    admin_path: ADMIN_PATH + '/',
   });
 }));
 
@@ -608,7 +618,7 @@ app.patch('/api/admin/orders/:id', adminRequired, ah(async (req, res) => {
 // ---------- 靜態檔案 ----------
 
 app.use(express.static(path.join(__dirname, 'public')));
-app.use('/admin', express.static(path.join(__dirname, 'public', 'admin')));
+app.use(ADMIN_PATH, express.static(path.join(__dirname, 'admin')));
 
 // 404 for unknown API
 app.use('/api', (req, res) => res.status(404).json({ error: 'API 不存在' }));
@@ -626,7 +636,7 @@ initDatabase()
   .then(() => {
     app.listen(PORT, () => {
       console.log(`AURAFIT 服飾網站已啟動： http://localhost:${PORT}`);
-      console.log(`後台管理： http://localhost:${PORT}/admin/`);
+      console.log(`後台管理： http://localhost:${PORT}${ADMIN_PATH}/`);
     });
   })
   .catch((err) => {

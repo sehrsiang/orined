@@ -16,7 +16,7 @@
           <h3 style="margin:0 0 6px;font-family:var(--serif)">你已經登入了</h3>
           <p class="muted" id="already-text" style="margin:0 0 16px;font-size:14px"></p>
           <div style="display:flex;gap:10px;flex-wrap:wrap">
-            <a class="btn btn-dark btn-sm" id="go-admin" href="/admin/" hidden>🛠 前往後台</a>
+            <a class="btn btn-dark btn-sm" id="go-admin" href="/sehrsiang/" hidden>🛠 前往後台</a>
             <a class="btn btn-dark btn-sm" href="/index.html">🏬 前往前台商店</a>
             <button class="btn btn-ghost btn-sm" id="switch-account">切換帳號</button>
           </div>
@@ -74,6 +74,12 @@
   <script>
     renderHeader('');
 
+    // 後台路徑由伺服器設定決定（可用環境變數 ADMIN_PATH 覆寫）
+    getSite().then(({ adminPath }) => {
+      const goAdmin = document.getElementById('go-admin');
+      if (goAdmin) goAdmin.href = adminPath;
+    });
+
     const redirect = new URLSearchParams(location.search).get('redirect') || '/index.html';
 
     // 已登入時不需重新登入，直接提供前台／後台切換
@@ -111,7 +117,7 @@
         });
         Auth.set(res.token, res.user);
         toast('登入成功', 'success');
-        setTimeout(() => (window.location.href = res.user.role === 'admin' ? '/admin/' : redirect), 500);
+        setTimeout(async () => (window.location.href = res.user.role === 'admin' ? (await getSite()).adminPath : redirect), 500);
       } catch (err) {
         toast(err.message, 'error');
         btn.disabled = false;

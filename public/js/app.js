@@ -173,6 +173,8 @@ function confirmDialog(message, { title = '確認操作', okText = '確定刪除
 /* ===================== 網站名稱（品牌名）與樣式 ===================== */
 const DEFAULT_SITE_NAME = 'AURAFIT';
 const DEFAULT_BRAND_STYLE = 'duo';
+/** 後台預設路徑（伺服器可用環境變數 ADMIN_PATH 覆寫，前端以 /api/site 回傳的 admin_path 為準）。 */
+const DEFAULT_ADMIN_PATH = '/sehrsiang/';
 
 /** 可選的品牌樣式（key 對應 CSS 的 .brand-style-<key>）。 */
 const BRAND_STYLES = [
@@ -193,7 +195,8 @@ async function getSite() {
   }
   const name = (siteCache && siteCache.site_name) || DEFAULT_SITE_NAME;
   const style = (siteCache && siteCache.site_name_style) || DEFAULT_BRAND_STYLE;
-  return { name, style };
+  const adminPath = (siteCache && siteCache.admin_path) || DEFAULT_ADMIN_PATH;
+  return { name, style, adminPath };
 }
 
 /** 品牌字樣：只有「雙色」需要把名稱拆成前後兩段（後段為金色）。 */
@@ -226,13 +229,12 @@ async function applyBranding() {
 }
 
 /* ===================== 前台頁首 ===================== */
-function renderHeader(active = '') {
+async function renderHeader(active = '') {
   const mount = document.getElementById('site-header');
   if (!mount) return;
+  const { name: brandName, style: brandStyle, adminPath } = await getSite();
   const user = Auth.getUser();
   const count = Cart.count();
-  const brandName = (siteCache && siteCache.site_name) || DEFAULT_SITE_NAME;
-  const brandStyle = (siteCache && siteCache.site_name_style) || DEFAULT_BRAND_STYLE;
 
   mount.innerHTML = `
     <div class="topbar">全館滿 NT$2,000 免運費 · 新會員首購現折 NT$200</div>
@@ -249,7 +251,7 @@ function renderHeader(active = '') {
         </a>
         ${
           user
-            ? `${Auth.isAdmin() ? '<a class="btn btn-admin btn-sm" href="/admin/" title="前往後台管理">🛠 後台管理</a>' : ''}
+            ? `${Auth.isAdmin() ? `<a class="btn btn-admin btn-sm" href="${adminPath}" title="前往後台管理">🛠 後台管理</a>` : ''}
                <span class="user-chip">${escapeHtml(user.name)}</span>
                <button class="btn btn-ghost btn-sm" id="logout-btn">登出</button>`
             : `<a class="btn btn-dark btn-sm" href="/login.html">登入 / 註冊</a>`
