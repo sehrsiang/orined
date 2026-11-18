@@ -2,13 +2,14 @@
 
 const express = require('express');
 const path = require('node:path');
-const { db, initDatabase } = require('./db');
+const { pool, all, get, run, initDatabase } = require('./db');
 const { hashPassword, verifyPassword, generateToken } = require('./auth');
-
-initDatabase();
 
 const app = express();
 app.use(express.json());
+
+/** 包裝非同步的路由處理函式，將錯誤交給 Express 的錯誤處理中介層。 */
+const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 // ---------- 工具函式 ----------
 
@@ -16,18 +17,22 @@ const ORDER_STATUSES = ['pending', 'paid', 'shipped', 'completed', 'cancelled'];
 
 const PAYMENT_SECTION_KEY = 'checkout_payment_enabled';
 
-function getSetting(key, fallback = '') {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+async function getSetting(key, fallback = '') {
+  const row = await get('SELECT value FROM settings WHERE key = $1', [key]);
   return row ? row.value : fallback;
 }
 
-function setSetting(key, value) {
-  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, String(value));
+async function setSetting(key, value) {
+  await run(
+    `INSERT INTO settings (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    [key, String(value)]
+  );
 }
 
 /** 結帳頁是否顯示「付款方式」區塊。 */
-function isPaymentSectionEnabled() {
-  return getSetting(PAYMENT_SECTION_KEY, '1') === '1';
+async function isPaymentSectionEnabled() {
+  return (await getSetting(PAYMENT_SECTION_KEY, '1')) === '1';
 }
 
 function toArray(value) {
@@ -53,38 +58,37 @@ function mapOrder(row, items) {
 }
 
 /** 解析 Authorization header 取得當前使用者。 */
-function getCurrentUser(req) {
+async function getCurrentUser(req) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return null;
-  const row = db
-    .prepare(
-      `SELECT u.id, u.name, u.email, u.role
-       FROM sessions s JOIN users u ON u.id = s.user_id
-       WHERE s.token = ?`
-    )
-    .get(token);
+  const row = await get(
+    `SELECT u.id, u.name, u.email, u.role
+     FROM sessions s JOIN users u ON u.id = s.user_id
+     WHERE s.token = $1`,
+    [token]
+  );
   return row ? { ...row, token } : null;
 }
 
-function authRequired(req, res, next) {
-  const user = getCurrentUser(req);
+const authRequired = ah(async (req, res, next) => {
+  const user = await getCurrentUser(req);
   if (!user) return res.status(401).json({ error: '請先登入' });
   req.user = user;
   next();
-}
+});
 
-function adminRequired(req, res, next) {
-  const user = getCurrentUser(req);
+const adminRequired = ah(async (req, res, next) => {
+  const user = await getCurrentUser(req);
   if (!user) return res.status(401).json({ error: '請先登入' });
   if (user.role !== 'admin') return res.status(403).json({ error: '需要管理員權限' });
   req.user = user;
   next();
-}
+});
 
 // ---------- 認證 ----------
 
-app.post('/api/auth/register', (req, res) => {
+app.post('/api/auth/register', ah(async (req, res) => {
   const { name, email, password } = req.body || {};
   if (!name || !email || !password) {
     return res.status(400).json({ error: '姓名、Email、密碼皆為必填' });
@@ -93,40 +97,41 @@ app.post('/api/auth/register', (req, res) => {
     return res.status(400).json({ error: '密碼長度至少 6 個字元' });
   }
   const normalizedEmail = String(email).trim().toLowerCase();
-  const exists = db.prepare('SELECT id FROM users WHERE email = ?').get(normalizedEmail);
+  const exists = await get('SELECT id FROM users WHERE email = $1', [normalizedEmail]);
   if (exists) return res.status(409).json({ error: '此 Email 已被註冊' });
 
-  const result = db
-    .prepare('INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)')
-    .run(String(name).trim(), normalizedEmail, hashPassword(password), 'customer');
+  const inserted = await get(
+    'INSERT INTO users (name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id',
+    [String(name).trim(), normalizedEmail, hashPassword(password), 'customer']
+  );
 
-  const userId = Number(result.lastInsertRowid);
+  const userId = inserted.id;
   const token = generateToken();
-  db.prepare('INSERT INTO sessions (token, user_id) VALUES (?, ?)').run(token, userId);
-  const user = db.prepare('SELECT id, name, email, role FROM users WHERE id = ?').get(userId);
+  await run('INSERT INTO sessions (token, user_id) VALUES ($1, $2)', [token, userId]);
+  const user = await get('SELECT id, name, email, role FROM users WHERE id = $1', [userId]);
   res.status(201).json({ token, user });
-});
+}));
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', ah(async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: '請輸入 Email 與密碼' });
   const normalizedEmail = String(email).trim().toLowerCase();
-  const row = db.prepare('SELECT * FROM users WHERE email = ?').get(normalizedEmail);
+  const row = await get('SELECT * FROM users WHERE email = $1', [normalizedEmail]);
   if (!row || !verifyPassword(password, row.password_hash)) {
     return res.status(401).json({ error: 'Email 或密碼錯誤' });
   }
   const token = generateToken();
-  db.prepare('INSERT INTO sessions (token, user_id) VALUES (?, ?)').run(token, row.id);
+  await run('INSERT INTO sessions (token, user_id) VALUES ($1, $2)', [token, row.id]);
   res.json({
     token,
     user: { id: row.id, name: row.name, email: row.email, role: row.role },
   });
-});
+}));
 
-app.post('/api/auth/logout', authRequired, (req, res) => {
-  db.prepare('DELETE FROM sessions WHERE token = ?').run(req.user.token);
+app.post('/api/auth/logout', authRequired, ah(async (req, res) => {
+  await run('DELETE FROM sessions WHERE token = $1', [req.user.token]);
   res.json({ ok: true });
-});
+}));
 
 app.get('/api/auth/me', authRequired, (req, res) => {
   const { id, name, email, role } = req.user;
@@ -135,15 +140,13 @@ app.get('/api/auth/me', authRequired, (req, res) => {
 
 // ---------- 分類（公開） ----------
 
-app.get('/api/categories', (req, res) => {
-  const rows = db
-    .prepare(
-      `SELECT c.*, (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.active = 1) AS product_count
-       FROM categories c ORDER BY c.sort_order, c.id`
-    )
-    .all();
+app.get('/api/categories', ah(async (req, res) => {
+  const rows = await all(
+    `SELECT c.*, (SELECT COUNT(*)::int FROM products p WHERE p.category_id = c.id AND p.active = 1) AS product_count
+     FROM categories c ORDER BY c.sort_order, c.id`
+  );
   res.json(rows);
-});
+}));
 
 // ---------- 網站設定（公開） ----------
 
@@ -153,55 +156,51 @@ const DEFAULT_BRAND_STYLE = 'duo';
 const BRAND_STYLE_KEY = 'site_name_style';
 const BRAND_STYLES = ['duo', 'mono', 'gold', 'gradient', 'outline'];
 
-app.get('/api/site', (req, res) => {
+app.get('/api/site', ah(async (req, res) => {
   res.json({
-    site_name: getSetting(SITE_NAME_KEY, DEFAULT_SITE_NAME),
-    site_name_style: getSetting(BRAND_STYLE_KEY, DEFAULT_BRAND_STYLE),
+    site_name: await getSetting(SITE_NAME_KEY, DEFAULT_SITE_NAME),
+    site_name_style: await getSetting(BRAND_STYLE_KEY, DEFAULT_BRAND_STYLE),
   });
-});
+}));
 
 // ---------- 付款方式（公開） ----------
 
 // 結帳頁設定：是否顯示付款方式區塊 + 已開通的付款方式
-app.get('/api/checkout-config', (req, res) => {
-  const payment_enabled = isPaymentSectionEnabled();
+app.get('/api/checkout-config', ah(async (req, res) => {
+  const payment_enabled = await isPaymentSectionEnabled();
   const methods = payment_enabled
-    ? db
-        .prepare('SELECT id, code, name, instructions FROM payment_methods WHERE enabled = 1 ORDER BY sort_order, id')
-        .all()
+    ? await all('SELECT id, code, name, instructions FROM payment_methods WHERE enabled = 1 ORDER BY sort_order, id')
     : [];
   res.json({ payment_enabled, methods });
-});
+}));
 
-app.get('/api/payment-methods', (req, res) => {
-  const rows = db
-    .prepare('SELECT id, code, name, instructions FROM payment_methods WHERE enabled = 1 ORDER BY sort_order, id')
-    .all();
+app.get('/api/payment-methods', ah(async (req, res) => {
+  const rows = await all('SELECT id, code, name, instructions FROM payment_methods WHERE enabled = 1 ORDER BY sort_order, id');
   res.json(rows);
-});
+}));
 
 // ---------- 商品（公開） ----------
 
-app.get('/api/products', (req, res) => {
+app.get('/api/products', ah(async (req, res) => {
   const { category, q, min, max, sort, featured } = req.query;
   const where = ['p.active = 1'];
   const params = [];
 
   if (category) {
-    where.push('c.slug = ?');
     params.push(category);
+    where.push(`c.slug = $${params.length}`);
   }
   if (q) {
-    where.push('(p.name LIKE ? OR p.description LIKE ?)');
     params.push(`%${q}%`, `%${q}%`);
+    where.push(`(p.name ILIKE $${params.length - 1} OR p.description ILIKE $${params.length})`);
   }
   if (min) {
-    where.push('p.price >= ?');
     params.push(Number(min));
+    where.push(`p.price >= $${params.length}`);
   }
   if (max) {
-    where.push('p.price <= ?');
     params.push(Number(max));
+    where.push(`p.price <= $${params.length}`);
   }
   if (featured === '1') {
     where.push('p.featured = 1');
@@ -212,33 +211,31 @@ app.get('/api/products', (req, res) => {
   else if (sort === 'price_desc') orderBy = 'p.price DESC';
   else if (sort === 'name') orderBy = 'p.name ASC';
 
-  const rows = db
-    .prepare(
-      `SELECT p.*, c.name AS category_name, c.slug AS category_slug
-       FROM products p LEFT JOIN categories c ON c.id = p.category_id
-       WHERE ${where.join(' AND ')}
-       ORDER BY ${orderBy}`
-    )
-    .all(...params);
+  const rows = await all(
+    `SELECT p.*, c.name AS category_name, c.slug AS category_slug
+     FROM products p LEFT JOIN categories c ON c.id = p.category_id
+     WHERE ${where.join(' AND ')}
+     ORDER BY ${orderBy}`,
+    params
+  );
 
   res.json(rows.map(mapProduct));
-});
+}));
 
-app.get('/api/products/:id', (req, res) => {
-  const row = db
-    .prepare(
-      `SELECT p.*, c.name AS category_name, c.slug AS category_slug
-       FROM products p LEFT JOIN categories c ON c.id = p.category_id
-       WHERE p.id = ?`
-    )
-    .get(Number(req.params.id));
+app.get('/api/products/:id', ah(async (req, res) => {
+  const row = await get(
+    `SELECT p.*, c.name AS category_name, c.slug AS category_slug
+     FROM products p LEFT JOIN categories c ON c.id = p.category_id
+     WHERE p.id = $1`,
+    [Number(req.params.id)]
+  );
   if (!row || !row.active) return res.status(404).json({ error: '找不到此商品' });
   res.json(mapProduct(row));
-});
+}));
 
 // ---------- 訂單（會員） ----------
 
-app.post('/api/orders', authRequired, (req, res) => {
+app.post('/api/orders', authRequired, ah(async (req, res) => {
   const { items, customer_name, phone, address, note, payment_method } = req.body || {};
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: '購物車是空的' });
@@ -249,22 +246,19 @@ app.post('/api/orders', authRequired, (req, res) => {
 
   // 付款方式：若後台關閉了付款區塊，結帳不需選擇；否則必須是目前已開通的項目
   let method = { code: '', name: '', instructions: '' };
-  if (isPaymentSectionEnabled()) {
-    const found = db
-      .prepare('SELECT * FROM payment_methods WHERE code = ? AND enabled = 1')
-      .get(String(payment_method || ''));
+  if (await isPaymentSectionEnabled()) {
+    const found = await get('SELECT * FROM payment_methods WHERE code = $1 AND enabled = 1', [String(payment_method || '')]);
     if (!found) {
       return res.status(400).json({ error: '請選擇有效的付款方式' });
     }
     method = found;
   }
 
-  const getProduct = db.prepare('SELECT * FROM products WHERE id = ? AND active = 1');
   const lines = [];
   let total = 0;
 
   for (const item of items) {
-    const product = getProduct.get(Number(item.product_id));
+    const product = await get('SELECT * FROM products WHERE id = $1 AND active = 1', [Number(item.product_id)]);
     if (!product) return res.status(400).json({ error: `商品 #${item.product_id} 不存在` });
     const qty = Math.max(1, Number(item.qty) || 1);
     if (qty > product.stock) {
@@ -281,137 +275,131 @@ app.post('/api/orders', authRequired, (req, res) => {
     });
   }
 
+  const client = await pool.connect();
   let orderId;
-  db.exec('BEGIN');
   try {
-    const orderRes = db
-      .prepare(
-        `INSERT INTO orders (user_id, total, status, customer_name, phone, address, note, payment_method, payment_name, payment_note)
-         VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
+    await client.query('BEGIN');
+    const orderRes = await client.query(
+      `INSERT INTO orders (user_id, total, status, customer_name, phone, address, note, payment_method, payment_name, payment_note)
+       VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      [
         req.user.id, total,
         String(customer_name).trim(), String(phone).trim(), String(address).trim(),
         String(note || '').trim(),
-        method.code, method.name, String(method.instructions || '')
-      );
-    orderId = Number(orderRes.lastInsertRowid);
-
-    const insertItem = db.prepare(
-      `INSERT INTO order_items (order_id, product_id, name, price, qty, size, color)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+        method.code, method.name, String(method.instructions || ''),
+      ]
     );
-    const decStock = db.prepare('UPDATE products SET stock = stock - ? WHERE id = ?');
+    orderId = orderRes.rows[0].id;
+
     for (const line of lines) {
-      insertItem.run(orderId, line.product_id, line.name, line.price, line.qty, line.size, line.color);
-      decStock.run(line.qty, line.product_id);
+      await client.query(
+        `INSERT INTO order_items (order_id, product_id, name, price, qty, size, color)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [orderId, line.product_id, line.name, line.price, line.qty, line.size, line.color]
+      );
+      await client.query('UPDATE products SET stock = stock - $1 WHERE id = $2', [line.qty, line.product_id]);
     }
-    db.exec('COMMIT');
+    await client.query('COMMIT');
   } catch (err) {
-    db.exec('ROLLBACK');
+    await client.query('ROLLBACK');
     throw err;
+  } finally {
+    client.release();
   }
 
   res.status(201).json({ order_id: orderId, total, payment_name: method.name });
-});
+}));
 
-app.get('/api/orders/mine', authRequired, (req, res) => {
-  const orders = db
-    .prepare('SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC')
-    .all(req.user.id);
-  const itemStmt = db.prepare('SELECT * FROM order_items WHERE order_id = ?');
-  res.json(orders.map((o) => mapOrder(o, itemStmt.all(o.id))));
-});
+app.get('/api/orders/mine', authRequired, ah(async (req, res) => {
+  const orders = await all('SELECT * FROM orders WHERE user_id = $1 ORDER BY id DESC', [req.user.id]);
+  const withItems = await Promise.all(
+    orders.map(async (o) => mapOrder(o, await all('SELECT * FROM order_items WHERE order_id = $1', [o.id])))
+  );
+  res.json(withItems);
+}));
 
 // ---------- 後台：儀表板 ----------
 
-app.get('/api/admin/stats', adminRequired, (req, res) => {
-  const productCount = db.prepare('SELECT COUNT(*) AS n FROM products').get().n;
-  const categoryCount = db.prepare('SELECT COUNT(*) AS n FROM categories').get().n;
-  const orderCount = db.prepare('SELECT COUNT(*) AS n FROM orders').get().n;
-  const revenue = db
-    .prepare("SELECT COALESCE(SUM(total), 0) AS s FROM orders WHERE status != 'cancelled'")
-    .get().s;
-  const customerCount = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'customer'").get().n;
-  const lowStock = db
-    .prepare('SELECT id, name, stock FROM products WHERE stock <= 20 ORDER BY stock ASC LIMIT 5')
-    .all();
-  const byStatus = db.prepare('SELECT status, COUNT(*) AS n FROM orders GROUP BY status').all();
-  const recentOrders = db
-    .prepare('SELECT id, customer_name, total, status, created_at FROM orders ORDER BY id DESC LIMIT 5')
-    .all();
-  const topProducts = db
-    .prepare(
-      `SELECT oi.name, SUM(oi.qty) AS sold, SUM(oi.qty * oi.price) AS revenue
-       FROM order_items oi GROUP BY oi.name ORDER BY sold DESC LIMIT 5`
-    )
-    .all();
+app.get('/api/admin/stats', adminRequired, ah(async (req, res) => {
+  const productCount = (await get('SELECT COUNT(*)::int AS n FROM products')).n;
+  const categoryCount = (await get('SELECT COUNT(*)::int AS n FROM categories')).n;
+  const orderCount = (await get('SELECT COUNT(*)::int AS n FROM orders')).n;
+  const revenue = (await get("SELECT COALESCE(SUM(total), 0)::float AS s FROM orders WHERE status != 'cancelled'")).s;
+  const customerCount = (await get("SELECT COUNT(*)::int AS n FROM users WHERE role = 'customer'")).n;
+  const lowStock = await all('SELECT id, name, stock FROM products WHERE stock <= 20 ORDER BY stock ASC LIMIT 5');
+  const byStatus = await all('SELECT status, COUNT(*)::int AS n FROM orders GROUP BY status');
+  const recentOrders = await all('SELECT id, customer_name, total, status, created_at FROM orders ORDER BY id DESC LIMIT 5');
+  const topProducts = await all(
+    `SELECT oi.name, SUM(oi.qty)::int AS sold, SUM(oi.qty * oi.price)::float AS revenue
+     FROM order_items oi GROUP BY oi.name ORDER BY sold DESC LIMIT 5`
+  );
 
   res.json({ productCount, categoryCount, orderCount, revenue, customerCount, lowStock, byStatus, recentOrders, topProducts });
-});
+}));
 
 // ---------- 後台：分類管理 ----------
 
-app.post('/api/admin/categories', adminRequired, (req, res) => {
+app.post('/api/admin/categories', adminRequired, ah(async (req, res) => {
   const { name, slug, description, sort_order } = req.body || {};
   if (!name || !slug) return res.status(400).json({ error: '分類名稱與代稱(slug)為必填' });
-  const dup = db.prepare('SELECT id FROM categories WHERE slug = ?').get(slug);
+  const dup = await get('SELECT id FROM categories WHERE slug = $1', [slug]);
   if (dup) return res.status(409).json({ error: '此 slug 已存在' });
-  const result = db
-    .prepare('INSERT INTO categories (name, slug, description, sort_order) VALUES (?, ?, ?, ?)')
-    .run(String(name).trim(), String(slug).trim(), String(description || ''), Number(sort_order) || 0);
-  res.status(201).json(db.prepare('SELECT * FROM categories WHERE id = ?').get(Number(result.lastInsertRowid)));
-});
+  const row = await get(
+    'INSERT INTO categories (name, slug, description, sort_order) VALUES ($1, $2, $3, $4) RETURNING *',
+    [String(name).trim(), String(slug).trim(), String(description || ''), Number(sort_order) || 0]
+  );
+  res.status(201).json(row);
+}));
 
-app.put('/api/admin/categories/:id', adminRequired, (req, res) => {
+app.put('/api/admin/categories/:id', adminRequired, ah(async (req, res) => {
   const id = Number(req.params.id);
-  const existing = db.prepare('SELECT * FROM categories WHERE id = ?').get(id);
+  const existing = await get('SELECT * FROM categories WHERE id = $1', [id]);
   if (!existing) return res.status(404).json({ error: '找不到此分類' });
   const { name, slug, description, sort_order } = req.body || {};
-  db.prepare('UPDATE categories SET name = ?, slug = ?, description = ?, sort_order = ? WHERE id = ?').run(
+  await run('UPDATE categories SET name = $1, slug = $2, description = $3, sort_order = $4 WHERE id = $5', [
     name ?? existing.name,
     slug ?? existing.slug,
     description ?? existing.description,
     sort_order ?? existing.sort_order,
-    id
-  );
-  res.json(db.prepare('SELECT * FROM categories WHERE id = ?').get(id));
-});
+    id,
+  ]);
+  res.json(await get('SELECT * FROM categories WHERE id = $1', [id]));
+}));
 
-app.delete('/api/admin/categories/:id', adminRequired, (req, res) => {
+app.delete('/api/admin/categories/:id', adminRequired, ah(async (req, res) => {
   const id = Number(req.params.id);
-  const result = db.prepare('DELETE FROM categories WHERE id = ?').run(id);
-  if (result.changes === 0) return res.status(404).json({ error: '找不到此分類' });
+  const result = await run('DELETE FROM categories WHERE id = $1', [id]);
+  if (result.rowCount === 0) return res.status(404).json({ error: '找不到此分類' });
   res.json({ ok: true });
-});
+}));
 
 // ---------- 後台：網站設定 ----------
 
-function siteSettings() {
+async function siteSettings() {
   return {
-    checkout_payment_enabled: isPaymentSectionEnabled(),
-    site_name: getSetting(SITE_NAME_KEY, DEFAULT_SITE_NAME),
-    site_name_style: getSetting(BRAND_STYLE_KEY, DEFAULT_BRAND_STYLE),
+    checkout_payment_enabled: await isPaymentSectionEnabled(),
+    site_name: await getSetting(SITE_NAME_KEY, DEFAULT_SITE_NAME),
+    site_name_style: await getSetting(BRAND_STYLE_KEY, DEFAULT_BRAND_STYLE),
     brand_styles: BRAND_STYLES,
   };
 }
 
-app.get('/api/admin/settings', adminRequired, (req, res) => {
-  res.json(siteSettings());
-});
+app.get('/api/admin/settings', adminRequired, ah(async (req, res) => {
+  res.json(await siteSettings());
+}));
 
-app.put('/api/admin/settings', adminRequired, (req, res) => {
+app.put('/api/admin/settings', adminRequired, ah(async (req, res) => {
   const { checkout_payment_enabled, site_name, site_name_style } = req.body || {};
 
   if (checkout_payment_enabled !== undefined) {
-    setSetting(PAYMENT_SECTION_KEY, checkout_payment_enabled ? '1' : '0');
+    await setSetting(PAYMENT_SECTION_KEY, checkout_payment_enabled ? '1' : '0');
   }
 
   if (site_name !== undefined) {
     const name = String(site_name).trim();
     if (!name) return res.status(400).json({ error: '網站名稱不可為空' });
     if (name.length > 30) return res.status(400).json({ error: '網站名稱請勿超過 30 個字' });
-    setSetting(SITE_NAME_KEY, name);
+    await setSetting(SITE_NAME_KEY, name);
   }
 
   if (site_name_style !== undefined) {
@@ -419,26 +407,26 @@ app.put('/api/admin/settings', adminRequired, (req, res) => {
     if (!BRAND_STYLES.includes(style)) {
       return res.status(400).json({ error: '不支援的品牌樣式' });
     }
-    setSetting(BRAND_STYLE_KEY, style);
+    await setSetting(BRAND_STYLE_KEY, style);
   }
 
-  res.json(siteSettings());
-});
+  res.json(await siteSettings());
+}));
 
 // ---------- 後台：管理員帳號（名稱 / Email / 密碼） ----------
 
-app.get('/api/admin/account', adminRequired, (req, res) => {
-  const row = db.prepare('SELECT id, name, email FROM users WHERE id = ?').get(req.user.id);
+app.get('/api/admin/account', adminRequired, ah(async (req, res) => {
+  const row = await get('SELECT id, name, email FROM users WHERE id = $1', [req.user.id]);
   res.json(row);
-});
+}));
 
-app.put('/api/admin/account', adminRequired, (req, res) => {
+app.put('/api/admin/account', adminRequired, ah(async (req, res) => {
   const { current_password, name, email, new_password } = req.body || {};
   if (!current_password) {
     return res.status(400).json({ error: '請先輸入目前的密碼以確認身分' });
   }
 
-  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  const row = await get('SELECT * FROM users WHERE id = $1', [req.user.id]);
   if (!row || !verifyPassword(String(current_password), row.password_hash)) {
     return res.status(401).json({ error: '目前的密碼不正確' });
   }
@@ -449,8 +437,8 @@ app.put('/api/admin/account', adminRequired, (req, res) => {
   if (name !== undefined) {
     const n = String(name).trim();
     if (!n) return res.status(400).json({ error: '名稱不可為空' });
-    updates.push('name = ?');
     values.push(n);
+    updates.push(`name = $${values.length}`);
   }
 
   if (email !== undefined) {
@@ -458,82 +446,81 @@ app.put('/api/admin/account', adminRequired, (req, res) => {
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) {
       return res.status(400).json({ error: 'Email 格式不正確' });
     }
-    const exists = db.prepare('SELECT id FROM users WHERE email = ? AND id <> ?').get(e, req.user.id);
+    const exists = await get('SELECT id FROM users WHERE email = $1 AND id <> $2', [e, req.user.id]);
     if (exists) return res.status(409).json({ error: '此 Email 已被其他帳號使用' });
-    updates.push('email = ?');
     values.push(e);
+    updates.push(`email = $${values.length}`);
   }
 
   if (new_password !== undefined && new_password !== '') {
     if (String(new_password).length < 6) {
       return res.status(400).json({ error: '新密碼長度至少 6 個字元' });
     }
-    updates.push('password_hash = ?');
     values.push(hashPassword(String(new_password)));
+    updates.push(`password_hash = $${values.length}`);
   }
 
   if (!updates.length) return res.status(400).json({ error: '沒有要更新的內容' });
 
   values.push(req.user.id);
-  db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+  await run(`UPDATE users SET ${updates.join(', ')} WHERE id = $${values.length}`, values);
 
-  const user = db.prepare('SELECT id, name, email, role FROM users WHERE id = ?').get(req.user.id);
+  const user = await get('SELECT id, name, email, role FROM users WHERE id = $1', [req.user.id]);
   res.json({ ok: true, user });
-});
+}));
 
 // ---------- 後台：付款方式管理 ----------
 
-app.get('/api/admin/payment-methods', adminRequired, (req, res) => {
-  const rows = db.prepare('SELECT * FROM payment_methods ORDER BY sort_order, id').all();
+app.get('/api/admin/payment-methods', adminRequired, ah(async (req, res) => {
+  const rows = await all('SELECT * FROM payment_methods ORDER BY sort_order, id');
   res.json(rows);
-});
+}));
 
-app.post('/api/admin/payment-methods', adminRequired, (req, res) => {
+app.post('/api/admin/payment-methods', adminRequired, ah(async (req, res) => {
   const { name, instructions, enabled, sort_order } = req.body || {};
   if (!name) return res.status(400).json({ error: '付款方式名稱為必填' });
   const code = 'custom_' + Date.now().toString(36);
-  const result = db
-    .prepare('INSERT INTO payment_methods (code, name, instructions, enabled, builtin, sort_order) VALUES (?, ?, ?, ?, 0, ?)')
-    .run(code, String(name).trim(), String(instructions || ''), enabled === false ? 0 : 1, Number(sort_order) || 99);
-  res.status(201).json(db.prepare('SELECT * FROM payment_methods WHERE id = ?').get(Number(result.lastInsertRowid)));
-});
+  const row = await get(
+    'INSERT INTO payment_methods (code, name, instructions, enabled, builtin, sort_order) VALUES ($1, $2, $3, $4, 0, $5) RETURNING *',
+    [code, String(name).trim(), String(instructions || ''), enabled === false ? 0 : 1, Number(sort_order) || 99]
+  );
+  res.status(201).json(row);
+}));
 
-app.put('/api/admin/payment-methods/:id', adminRequired, (req, res) => {
+app.put('/api/admin/payment-methods/:id', adminRequired, ah(async (req, res) => {
   const id = Number(req.params.id);
-  const existing = db.prepare('SELECT * FROM payment_methods WHERE id = ?').get(id);
+  const existing = await get('SELECT * FROM payment_methods WHERE id = $1', [id]);
   if (!existing) return res.status(404).json({ error: '找不到此付款方式' });
   const { name, instructions, enabled, sort_order } = req.body || {};
-  db.prepare('UPDATE payment_methods SET name = ?, instructions = ?, enabled = ?, sort_order = ? WHERE id = ?').run(
+  await run('UPDATE payment_methods SET name = $1, instructions = $2, enabled = $3, sort_order = $4 WHERE id = $5', [
     name != null ? String(name).trim() : existing.name,
     instructions != null ? String(instructions) : existing.instructions,
     enabled === undefined ? existing.enabled : (enabled ? 1 : 0),
     sort_order != null ? Number(sort_order) : existing.sort_order,
-    id
-  );
-  res.json(db.prepare('SELECT * FROM payment_methods WHERE id = ?').get(id));
-});
+    id,
+  ]);
+  res.json(await get('SELECT * FROM payment_methods WHERE id = $1', [id]));
+}));
 
-app.delete('/api/admin/payment-methods/:id', adminRequired, (req, res) => {
+app.delete('/api/admin/payment-methods/:id', adminRequired, ah(async (req, res) => {
   const id = Number(req.params.id);
-  const existing = db.prepare('SELECT * FROM payment_methods WHERE id = ?').get(id);
+  const existing = await get('SELECT * FROM payment_methods WHERE id = $1', [id]);
   if (!existing) return res.status(404).json({ error: '找不到此付款方式' });
   if (existing.builtin) return res.status(400).json({ error: '內建付款方式不可刪除，請改用「停用」' });
-  db.prepare('DELETE FROM payment_methods WHERE id = ?').run(id);
+  await run('DELETE FROM payment_methods WHERE id = $1', [id]);
   res.json({ ok: true });
-});
+}));
 
 // ---------- 後台：商品管理 ----------
 
-app.get('/api/admin/products', adminRequired, (req, res) => {
-  const rows = db
-    .prepare(
-      `SELECT p.*, c.name AS category_name
-       FROM products p LEFT JOIN categories c ON c.id = p.category_id
-       ORDER BY p.id DESC`
-    )
-    .all();
+app.get('/api/admin/products', adminRequired, ah(async (req, res) => {
+  const rows = await all(
+    `SELECT p.*, c.name AS category_name
+     FROM products p LEFT JOIN categories c ON c.id = p.category_id
+     ORDER BY p.id DESC`
+  );
   res.json(rows.map(mapProduct));
-});
+}));
 
 function normalizeProductBody(body) {
   return {
@@ -550,74 +537,73 @@ function normalizeProductBody(body) {
   };
 }
 
-app.post('/api/admin/products', adminRequired, (req, res) => {
+app.post('/api/admin/products', adminRequired, ah(async (req, res) => {
   const p = normalizeProductBody(req.body || {});
   if (!p.name) return res.status(400).json({ error: '商品名稱為必填' });
-  const result = db
-    .prepare(
-      `INSERT INTO products (name, description, price, stock, category_id, image, sizes, colors, featured, active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(p.name, p.description, p.price, p.stock, p.category_id, p.image, p.sizes, p.colors, p.featured, p.active);
-  const row = db.prepare('SELECT * FROM products WHERE id = ?').get(Number(result.lastInsertRowid));
+  const row = await get(
+    `INSERT INTO products (name, description, price, stock, category_id, image, sizes, colors, featured, active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+    [p.name, p.description, p.price, p.stock, p.category_id, p.image, p.sizes, p.colors, p.featured, p.active]
+  );
   res.status(201).json(mapProduct(row));
-});
+}));
 
-app.put('/api/admin/products/:id', adminRequired, (req, res) => {
+app.put('/api/admin/products/:id', adminRequired, ah(async (req, res) => {
   const id = Number(req.params.id);
-  const existing = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
+  const existing = await get('SELECT * FROM products WHERE id = $1', [id]);
   if (!existing) return res.status(404).json({ error: '找不到此商品' });
   const p = normalizeProductBody(req.body || {});
-  db.prepare(
-    `UPDATE products SET name = ?, description = ?, price = ?, stock = ?, category_id = ?, image = ?, sizes = ?, colors = ?, featured = ?, active = ?
-     WHERE id = ?`
-  ).run(p.name || existing.name, p.description, p.price, p.stock, p.category_id, p.image, p.sizes, p.colors, p.featured, p.active, id);
-  res.json(mapProduct(db.prepare('SELECT * FROM products WHERE id = ?').get(id)));
-});
+  await run(
+    `UPDATE products SET name = $1, description = $2, price = $3, stock = $4, category_id = $5, image = $6, sizes = $7, colors = $8, featured = $9, active = $10
+     WHERE id = $11`,
+    [p.name || existing.name, p.description, p.price, p.stock, p.category_id, p.image, p.sizes, p.colors, p.featured, p.active, id]
+  );
+  res.json(mapProduct(await get('SELECT * FROM products WHERE id = $1', [id])));
+}));
 
-app.delete('/api/admin/products/:id', adminRequired, (req, res) => {
+app.delete('/api/admin/products/:id', adminRequired, ah(async (req, res) => {
   const id = Number(req.params.id);
-  const result = db.prepare('DELETE FROM products WHERE id = ?').run(id);
-  if (result.changes === 0) return res.status(404).json({ error: '找不到此商品' });
+  const result = await run('DELETE FROM products WHERE id = $1', [id]);
+  if (result.rowCount === 0) return res.status(404).json({ error: '找不到此商品' });
   res.json({ ok: true });
-});
+}));
 
 // ---------- 後台：訂單管理 ----------
 
-app.get('/api/admin/orders', adminRequired, (req, res) => {
+app.get('/api/admin/orders', adminRequired, ah(async (req, res) => {
   const { status } = req.query;
-  const where = status ? 'WHERE o.status = ?' : '';
+  const where = status ? 'WHERE o.status = $1' : '';
   const params = status ? [status] : [];
-  const orders = db
-    .prepare(
-      `SELECT o.*, u.email AS user_email
-       FROM orders o LEFT JOIN users u ON u.id = o.user_id
-       ${where} ORDER BY o.id DESC`
-    )
-    .all(...params);
-  const itemStmt = db.prepare('SELECT * FROM order_items WHERE order_id = ?');
-  res.json(orders.map((o) => mapOrder(o, itemStmt.all(o.id))));
-});
+  const orders = await all(
+    `SELECT o.*, u.email AS user_email
+     FROM orders o LEFT JOIN users u ON u.id = o.user_id
+     ${where} ORDER BY o.id DESC`,
+    params
+  );
+  const withItems = await Promise.all(
+    orders.map(async (o) => mapOrder(o, await all('SELECT * FROM order_items WHERE order_id = $1', [o.id])))
+  );
+  res.json(withItems);
+}));
 
-app.get('/api/admin/orders/:id', adminRequired, (req, res) => {
-  const order = db
-    .prepare(
-      `SELECT o.*, u.email AS user_email FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE o.id = ?`
-    )
-    .get(Number(req.params.id));
+app.get('/api/admin/orders/:id', adminRequired, ah(async (req, res) => {
+  const order = await get(
+    `SELECT o.*, u.email AS user_email FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE o.id = $1`,
+    [Number(req.params.id)]
+  );
   if (!order) return res.status(404).json({ error: '找不到此訂單' });
-  const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
+  const items = await all('SELECT * FROM order_items WHERE order_id = $1', [order.id]);
   res.json(mapOrder(order, items));
-});
+}));
 
-app.patch('/api/admin/orders/:id', adminRequired, (req, res) => {
+app.patch('/api/admin/orders/:id', adminRequired, ah(async (req, res) => {
   const id = Number(req.params.id);
   const { status } = req.body || {};
   if (!ORDER_STATUSES.includes(status)) return res.status(400).json({ error: '無效的訂單狀態' });
-  const result = db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(status, id);
-  if (result.changes === 0) return res.status(404).json({ error: '找不到此訂單' });
-  res.json(db.prepare('SELECT * FROM orders WHERE id = ?').get(id));
-});
+  const result = await run('UPDATE orders SET status = $1 WHERE id = $2', [status, id]);
+  if (result.rowCount === 0) return res.status(404).json({ error: '找不到此訂單' });
+  res.json(await get('SELECT * FROM orders WHERE id = $1', [id]));
+}));
 
 // ---------- 靜態檔案 ----------
 
@@ -627,8 +613,23 @@ app.use('/admin', express.static(path.join(__dirname, 'public', 'admin')));
 // 404 for unknown API
 app.use('/api', (req, res) => res.status(404).json({ error: 'API 不存在' }));
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`AURAFIT 服飾網站已啟動： http://localhost:${PORT}`);
-  console.log(`後台管理： http://localhost:${PORT}/admin/`);
+// 統一錯誤處理
+app.use((err, req, res, next) => {
+  console.error(err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: '伺服器發生錯誤' });
 });
+
+const PORT = process.env.PORT || 3000;
+
+initDatabase()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`AURAFIT 服飾網站已啟動： http://localhost:${PORT}`);
+      console.log(`後台管理： http://localhost:${PORT}/admin/`);
+    });
+  })
+  .catch((err) => {
+    console.error('資料庫初始化失敗：', err);
+    process.exit(1);
+  });

@@ -1,0 +1,14 @@
+# Render Blueprint：用 GitHub 連動即可一鍵部署（免費方案）
+# 部署前先到 Neon 建立免費 Postgres，取得連線字串（建議用 -pooler 的 pooled 連線）
+services:
+  - type: web
+    name: aurafit
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      # 在 Render 後台填入 Neon 的連線字串，例如：
+      # postgresql://user:pass@ep-xxx-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+      - key: DATABASE_URL
+        sync: false

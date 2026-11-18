@@ -1,40 +1,60 @@
 'use strict';
 
-const fs = require('node:fs');
-const path = require('node:path');
-const { DatabaseSync } = require('node:sqlite');
+const { Pool } = require('pg');
 const { hashPassword } = require('./auth');
 
-// 資料庫位置：預設放在專案目錄，部署時可用環境變數 DB_PATH 指向永久磁碟
-// （例如 Render 的 Persistent Disk：DB_PATH=/var/data/data.db）
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.db');
-const dbDir = path.dirname(DB_PATH);
-if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+// 資料庫連線：
+// - 部署（Render + Neon）時，於環境變數 DATABASE_URL 設定 Neon 提供的連線字串
+// - 本機開發若未設定，預設連到 localhost 的 Postgres
+const DATABASE_URL =
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/aurafit';
 
-const db = new DatabaseSync(DB_PATH);
+// 連到雲端（Neon）通常需要 SSL；本機則否。
+const needsSSL = /sslmode=require/.test(DATABASE_URL) || /neon\.tech/.test(DATABASE_URL);
 
-db.exec('PRAGMA foreign_keys = ON');
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: needsSSL ? { rejectUnauthorized: false } : false,
+});
 
-/** 建立資料表結構（若不存在）。 */
-function createSchema() {
-  db.exec(`
+/** 執行 SQL，回傳全部資料列。 */
+async function all(text, params = []) {
+  const res = await pool.query(text, params);
+  return res.rows;
+}
+
+/** 執行 SQL，回傳第一列資料（沒有則回傳 null）。 */
+async function get(text, params = []) {
+  const rows = await all(text, params);
+  return rows[0] || null;
+}
+
+/** 執行 SQL（寫入用），回傳原始結果（含 rowCount）。 */
+async function run(text, params = []) {
+  return pool.query(text, params);
+}
+
+/** 建立資料表結構（若不存在）。
+ *  註：created_at 以文字儲存（格式與舊版 SQLite 相同），方便前端直接顯示。 */
+async function createSchema() {
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      name          TEXT    NOT NULL,
-      email         TEXT    NOT NULL UNIQUE,
-      password_hash TEXT    NOT NULL,
-      role          TEXT    NOT NULL DEFAULT 'customer',
-      created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+      id            SERIAL PRIMARY KEY,
+      name          TEXT        NOT NULL,
+      email         TEXT        NOT NULL UNIQUE,
+      password_hash TEXT        NOT NULL,
+      role          TEXT        NOT NULL DEFAULT 'customer',
+      created_at    TEXT        NOT NULL DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
     );
 
     CREATE TABLE IF NOT EXISTS sessions (
       token      TEXT PRIMARY KEY,
       user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      created_at TEXT NOT NULL DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
     );
 
     CREATE TABLE IF NOT EXISTS categories (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      id          SERIAL PRIMARY KEY,
       name        TEXT NOT NULL,
       slug        TEXT NOT NULL UNIQUE,
       description TEXT DEFAULT '',
@@ -42,51 +62,51 @@ function createSchema() {
     );
 
     CREATE TABLE IF NOT EXISTS products (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT    NOT NULL,
-      description TEXT    DEFAULT '',
-      price       REAL    NOT NULL DEFAULT 0,
+      id          SERIAL PRIMARY KEY,
+      name        TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      price       DOUBLE PRECISION NOT NULL DEFAULT 0,
       stock       INTEGER NOT NULL DEFAULT 0,
       category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
-      image       TEXT    DEFAULT '',
-      sizes       TEXT    DEFAULT '',
-      colors      TEXT    DEFAULT '',
+      image       TEXT DEFAULT '',
+      sizes       TEXT DEFAULT '',
+      colors      TEXT DEFAULT '',
       featured    INTEGER NOT NULL DEFAULT 0,
       active      INTEGER NOT NULL DEFAULT 1,
-      created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+      created_at  TEXT NOT NULL DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
     );
 
     CREATE TABLE IF NOT EXISTS orders (
-      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      id               SERIAL PRIMARY KEY,
       user_id          INTEGER REFERENCES users(id) ON DELETE SET NULL,
-      total            REAL    NOT NULL DEFAULT 0,
-      status           TEXT    NOT NULL DEFAULT 'pending',
-      customer_name    TEXT    NOT NULL,
-      phone            TEXT    NOT NULL,
-      address          TEXT    NOT NULL,
-      note             TEXT    DEFAULT '',
-      payment_method   TEXT    DEFAULT '',
-      payment_name     TEXT    DEFAULT '',
-      payment_note     TEXT    DEFAULT '',
-      created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+      total            DOUBLE PRECISION NOT NULL DEFAULT 0,
+      status           TEXT NOT NULL DEFAULT 'pending',
+      customer_name    TEXT NOT NULL,
+      phone            TEXT NOT NULL,
+      address          TEXT NOT NULL,
+      note             TEXT DEFAULT '',
+      payment_method   TEXT DEFAULT '',
+      payment_name     TEXT DEFAULT '',
+      payment_note     TEXT DEFAULT '',
+      created_at       TEXT NOT NULL DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
     );
 
     CREATE TABLE IF NOT EXISTS order_items (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      id         SERIAL PRIMARY KEY,
       order_id   INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
       product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
-      name       TEXT    NOT NULL,
-      price      REAL    NOT NULL,
+      name       TEXT NOT NULL,
+      price      DOUBLE PRECISION NOT NULL,
       qty        INTEGER NOT NULL,
-      size       TEXT    DEFAULT '',
-      color      TEXT    DEFAULT ''
+      size       TEXT DEFAULT '',
+      color      TEXT DEFAULT ''
     );
 
     CREATE TABLE IF NOT EXISTS payment_methods (
-      id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      code         TEXT    NOT NULL UNIQUE,
-      name         TEXT    NOT NULL,
-      instructions TEXT    DEFAULT '',
+      id           SERIAL PRIMARY KEY,
+      code         TEXT NOT NULL UNIQUE,
+      name         TEXT NOT NULL,
+      instructions TEXT DEFAULT '',
       enabled      INTEGER NOT NULL DEFAULT 1,
       builtin      INTEGER NOT NULL DEFAULT 0,
       sort_order   INTEGER NOT NULL DEFAULT 0
@@ -100,11 +120,12 @@ function createSchema() {
 }
 
 /** 舊資料庫的欄位升級（補上缺失的欄位）。 */
-function migrate() {
-  const cols = db.prepare('PRAGMA table_info(orders)').all().map((c) => c.name);
-  if (!cols.includes('payment_method')) db.exec("ALTER TABLE orders ADD COLUMN payment_method TEXT DEFAULT ''");
-  if (!cols.includes('payment_name')) db.exec("ALTER TABLE orders ADD COLUMN payment_name TEXT DEFAULT ''");
-  if (!cols.includes('payment_note')) db.exec("ALTER TABLE orders ADD COLUMN payment_note TEXT DEFAULT ''");
+async function migrate() {
+  await pool.query(`
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method TEXT DEFAULT '';
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_name   TEXT DEFAULT '';
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_note   TEXT DEFAULT '';
+  `);
 }
 
 /** 依 prompt 產生示範用商品圖片網址。 */
@@ -200,32 +221,28 @@ const PAYMENT_METHODS = [
 ];
 
 /** 寫入商店基本資料（分類、商品、帳號）。 */
-function seedStore() {
-  const insertCat = db.prepare(
-    'INSERT INTO categories (name, slug, description, sort_order) VALUES (?, ?, ?, ?)'
-  );
+async function seedStore() {
   const catIds = {};
   for (const c of CATEGORIES) {
-    const res = insertCat.run(c.name, c.slug, c.description, c.sort_order);
-    catIds[c.slug] = Number(res.lastInsertRowid);
+    const row = await get(
+      'INSERT INTO categories (name, slug, description, sort_order) VALUES ($1, $2, $3, $4) RETURNING id',
+      [c.name, c.slug, c.description, c.sort_order]
+    );
+    catIds[c.slug] = row.id;
   }
 
-  const insertProduct = db.prepare(`
-    INSERT INTO products (name, description, price, stock, category_id, image, sizes, colors, featured)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
   for (const p of PRODUCTS) {
-    insertProduct.run(
-      p.name, p.description, p.price, p.stock, catIds[p.c],
-      img(p.prompt), p.sizes, p.colors, p.featured
+    await run(
+      `INSERT INTO products (name, description, price, stock, category_id, image, sizes, colors, featured)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [p.name, p.description, p.price, p.stock, catIds[p.c], img(p.prompt), p.sizes, p.colors, p.featured]
     );
   }
 
-  const insertUser = db.prepare(
-    'INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)'
-  );
-  insertUser.run('網站管理員', 'admin@aurafit.com', hashPassword('admin1234'), 'admin');
-  insertUser.run('示範會員', 'user@aurafit.com', hashPassword('user1234'), 'customer');
+  await run('INSERT INTO users (name, email, password_hash, role) VALUES ($1, $2, $3, $4)',
+    ['網站管理員', 'admin@aurafit.com', hashPassword('admin1234'), 'admin']);
+  await run('INSERT INTO users (name, email, password_hash, role) VALUES ($1, $2, $3, $4)',
+    ['示範會員', 'user@aurafit.com', hashPassword('user1234'), 'customer']);
 
   console.log(
     `已寫入商店資料：${CATEGORIES.length} 個分類、${PRODUCTS.length} 件商品、2 個帳號。`
@@ -233,45 +250,54 @@ function seedStore() {
 }
 
 /** 寫入內建付款方式（僅在資料表為空時執行）。 */
-function seedPaymentMethods() {
-  const insert = db.prepare(
-    'INSERT INTO payment_methods (code, name, instructions, enabled, builtin, sort_order) VALUES (?, ?, ?, ?, ?, ?)'
-  );
+async function seedPaymentMethods() {
   for (const m of PAYMENT_METHODS) {
-    insert.run(m.code, m.name, m.instructions, m.enabled, m.builtin, m.sort_order);
+    await run(
+      'INSERT INTO payment_methods (code, name, instructions, enabled, builtin, sort_order) VALUES ($1, $2, $3, $4, $5, $6)',
+      [m.code, m.name, m.instructions, m.enabled, m.builtin, m.sort_order]
+    );
   }
   console.log(`已寫入 ${PAYMENT_METHODS.length} 種付款方式。`);
 }
 
 /** 初始化資料庫：建立結構、必要時寫入初始資料。 */
-function initDatabase({ reset = false } = {}) {
+async function initDatabase({ reset = false } = {}) {
   if (reset) {
-    db.exec('DROP TABLE IF EXISTS order_items; DROP TABLE IF EXISTS orders; DROP TABLE IF EXISTS sessions; DROP TABLE IF EXISTS products; DROP TABLE IF EXISTS categories; DROP TABLE IF EXISTS users; DROP TABLE IF EXISTS payment_methods; DROP TABLE IF EXISTS settings;');
+    await pool.query(
+      'DROP TABLE IF EXISTS order_items, orders, sessions, products, categories, users, payment_methods, settings CASCADE'
+    );
   }
-  createSchema();
-  migrate();
+  await createSchema();
+  await migrate();
 
   // 預設設定：結帳頁是否顯示「付款方式」區塊（1 = 顯示）
-  db.exec("INSERT OR IGNORE INTO settings (key, value) VALUES ('checkout_payment_enabled', '1')");
+  await run("INSERT INTO settings (key, value) VALUES ('checkout_payment_enabled', '1') ON CONFLICT (key) DO NOTHING");
   // 預設設定：網站／品牌名稱（可於後台修改）
-  db.exec("INSERT OR IGNORE INTO settings (key, value) VALUES ('site_name', 'AURAFIT')");
+  await run("INSERT INTO settings (key, value) VALUES ('site_name', 'AURAFIT') ON CONFLICT (key) DO NOTHING");
   // 預設設定：品牌名稱樣式（可於後台切換）
-  db.exec("INSERT OR IGNORE INTO settings (key, value) VALUES ('site_name_style', 'duo')");
+  await run("INSERT INTO settings (key, value) VALUES ('site_name_style', 'duo') ON CONFLICT (key) DO NOTHING");
 
-  const { count } = db.prepare('SELECT COUNT(*) AS count FROM products').get();
+  const { n: count } = await get('SELECT COUNT(*)::int AS n FROM products');
   if (count === 0) {
-    seedStore();
+    await seedStore();
   }
 
-  const { pcount } = db.prepare('SELECT COUNT(*) AS pcount FROM payment_methods').get();
+  const { n: pcount } = await get('SELECT COUNT(*)::int AS n FROM payment_methods');
   if (pcount === 0) {
-    seedPaymentMethods();
+    await seedPaymentMethods();
   }
 }
 
 if (require.main === module) {
-  initDatabase({ reset: process.argv.includes('--reset') });
-  console.log('資料庫初始化完成：', DB_PATH);
+  initDatabase({ reset: process.argv.includes('--reset') })
+    .then(() => {
+      console.log('資料庫初始化完成');
+      return pool.end();
+    })
+    .catch((err) => {
+      console.error('資料庫初始化失敗：', err);
+      process.exit(1);
+    });
 }
 
-module.exports = { db, initDatabase, DB_PATH };
+module.exports = { pool, all, get, run, initDatabase };

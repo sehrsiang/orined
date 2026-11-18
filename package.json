@@ -12,12 +12,16 @@
     "fashion",
     "ecommerce",
     "express",
-    "sqlite"
+    "postgres"
   ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
-    "express": "^4.22.3"
+    "express": "^4.22.3",
+    "pg": "^8.23.1"
   }
 }
