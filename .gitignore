@@ -1,0 +1,15 @@
+# 依賴套件（不要上傳，部署時用 npm install 還原）
+node_modules/
+
+# 執行期資料庫：含帳號密碼雜湊與訂單資料，切勿推上 GitHub
+# 伺服器第一次啟動時會自動建立並寫入示範資料
+data.db
+data.db-journal
+data.db-wal
+
+# 環境變數
+.env
+
+# 系統 / 編輯器 / 日誌
+.DS_Store
+*.log

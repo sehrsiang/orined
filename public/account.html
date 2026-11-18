@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>我的訂單 · AURAFIT</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <header id="site-header"></header>
+
+  <main class="container">
+    <div class="section-head" style="margin-top:28px">
+      <div>
+        <h2>我的訂單</h2>
+        <p id="welcome"></p>
+      </div>
+      <a class="btn btn-ghost btn-sm" href="/index.html">繼續購物</a>
+    </div>
+    <div id="orders"></div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-bottom">© 2026 <span data-site-name>AURAFIT</span>. 本網站為示範用途。</div>
+  </footer>
+
+  <script src="/js/app.js"></script>
+  <script>
+    renderHeader('account');
+
+    const user = Auth.getUser();
+    document.getElementById('welcome').textContent = user ? `嗨，${user.name}，這裡是你所有的訂單紀錄。` : '';
+
+    async function loadOrders() {
+      const box = document.getElementById('orders');
+      if (!Auth.isLoggedIn()) {
+        box.innerHTML = `<div class="empty"><div class="big">🔐</div>請先登入以查看訂單<br><br><a class="btn btn-dark" href="/login.html?redirect=/account.html">前往登入</a></div>`;
+        return;
+      }
+      box.innerHTML = '<div class="skeleton" style="height:140px;margin-bottom:16px"></div><div class="skeleton" style="height:140px"></div>';
+      try {
+        const orders = await API.get('/api/orders/mine');
+        if (!orders.length) {
+          box.innerHTML = `<div class="empty"><div class="big">📦</div>還沒有任何訂單<br><br><a class="btn btn-dark" href="/index.html">開始選購</a></div>`;
+          return;
+        }
+        box.innerHTML = orders.map((o) => `
+          <div class="order-card">
+            <div class="order-head">
+              <div>
+                <span class="id">訂單 #${o.id}</span>
+                ${statusBadge(o.status)}
+              </div>
+              <span class="date">${escapeHtml(o.created_at)}</span>
+            </div>
+            ${o.items.map((it) => `
+              <div class="order-item-line">
+                <span>${escapeHtml(it.name)}${it.size ? `（${escapeHtml(it.size)}${it.color ? ' / ' + escapeHtml(it.color) : ''}）` : ''} × ${it.qty}</span>
+                <span>${formatMoney(it.price * it.qty)}</span>
+              </div>
+            `).join('')}
+            <div class="order-foot"><span>合計</span><span>${formatMoney(o.total)}</span></div>
+            <div class="muted" style="font-size:13px;margin-top:8px">
+              付款方式：${escapeHtml(o.payment_name || '—')}<br />
+              收件人：${escapeHtml(o.customer_name)} · ${escapeHtml(o.phone)}<br />
+              地址：${escapeHtml(o.address)}
+            </div>
+          </div>
+        `).join('');
+      } catch (err) {
+        box.innerHTML = `<div class="empty">載入失敗：${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    loadOrders();
+  </script>
+</body>
+</html>

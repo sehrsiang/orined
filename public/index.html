@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AURAFIT · 質感服飾選物</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <header id="site-header"></header>
+
+  <main class="container">
+    <section class="hero">
+      <img
+        src="https://core-normal.trae.ai/api/ide/v1/text_to_image?prompt=editorial%20fashion%20photography%20of%20a%20stylish%20model%20wearing%20a%20minimalist%20autumn%20outfit%20in%20neutral%20earth%20tones%2C%20full%20body%2C%20clean%20warm%20studio%20background%2C%20soft%20natural%20lighting%2C%20high%20fashion%20magazine%20cover%20aesthetic&image_size=landscape_16_9"
+        alt="AURAFIT 2026 秋冬形象" />
+      <div class="hero-content">
+        <div class="eyebrow">2026 秋冬系列</div>
+        <h1>穿出你的日常質感</h1>
+        <p>嚴選舒適面料與俐落剪裁，從日常通勤到週末約會，找到最貼近生活的那一件。</p>
+        <div class="hero-actions">
+          <a class="btn btn-light" href="#shop">立即選購</a>
+          <a class="btn btn-light" href="#shop" data-featured>看精選新品</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="shop">
+      <div class="section-head">
+        <div>
+          <h2 id="shop-title">所有商品</h2>
+          <p id="shop-sub">共 <span id="result-count">0</span> 件單品</p>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div class="search">
+          <span>🔍</span>
+          <input id="search-input" type="search" placeholder="搜尋商品名稱或描述…" />
+        </div>
+        <div class="field">
+          <label>最低價</label>
+          <input id="min-price" type="number" min="0" placeholder="0" style="width:90px" />
+        </div>
+        <div class="field">
+          <label>最高價</label>
+          <input id="max-price" type="number" min="0" placeholder="不限" style="width:90px" />
+        </div>
+        <div class="field">
+          <label>排序</label>
+          <select id="sort-select">
+            <option value="">最新上架</option>
+            <option value="price_asc">價格：低 → 高</option>
+            <option value="price_desc">價格：高 → 低</option>
+            <option value="name">名稱</option>
+          </select>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="reset-btn">重設</button>
+      </div>
+
+      <div class="chips" id="category-chips" style="margin-bottom: 26px"></div>
+
+      <div class="grid" id="product-grid"></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div>
+        <h4 data-site-name>AURAFIT</h4>
+        <p>質感服飾選物，讓日常穿搭更簡單。</p>
+      </div>
+      <div>
+        <h4>客戶服務</h4>
+        <p>滿 NT$2,000 免運</p>
+        <p>7 天鑑賞期</p>
+        <p>客服信箱 hello@aurafit.com</p>
+      </div>
+      <div>
+        <h4>關於我們</h4>
+        <p>品牌故事</p>
+        <p>門市據點</p>
+      </div>
+    </div>
+    <div class="container footer-bottom">© 2026 <span data-site-name>AURAFIT</span>. 本網站為示範用途。</div>
+  </footer>
+
+  <script src="/js/app.js"></script>
+  <script>
+    renderHeader('home');
+
+    const state = { category: '', featured: false, q: '', min: '', max: '', sort: '' };
+
+    function cardHtml(p) {
+      const soldOut = p.stock <= 0;
+      return `
+        <a class="card" href="/product.html?id=${p.id}">
+          <div class="card-media">
+            <img src="${escapeHtml(p.image)}" alt="${escapeHtml(p.name)}" loading="lazy" />
+            ${p.featured ? '<span class="card-tag">精選</span>' : ''}
+            ${soldOut ? '<div class="card-sold-out">已售完</div>' : ''}
+          </div>
+          <div class="card-body">
+            <span class="card-cat">${escapeHtml(p.category_name || '未分類')}</span>
+            <h3 class="card-title">${escapeHtml(p.name)}</h3>
+            <div class="card-price">${formatMoney(p.price)}</div>
+          </div>
+        </a>
+      `;
+    }
+
+    async function loadCategories() {
+      const cats = await API.get('/api/categories');
+      const chips = document.getElementById('category-chips');
+      const all = [{ name: '全部', slug: '' }, { name: '精選', slug: '__featured' }, ...cats];
+      chips.innerHTML = all
+        .map((c) => `<button class="chip" data-slug="${c.slug}">${escapeHtml(c.name)}</button>`)
+        .join('');
+      chips.addEventListener('click', (e) => {
+        const btn = e.target.closest('.chip');
+        if (!btn) return;
+        const slug = btn.dataset.slug;
+        state.featured = slug === '__featured';
+        state.category = state.featured ? '' : slug;
+        setActiveChip(slug);
+        loadProducts();
+      });
+    }
+
+    function setActiveChip(slug) {
+      document.querySelectorAll('#category-chips .chip').forEach((c) => {
+        c.classList.toggle('active', c.dataset.slug === slug);
+      });
+    }
+
+    async function loadProducts() {
+      const grid = document.getElementById('product-grid');
+      grid.innerHTML = Array.from({ length: 8 }, () => '<div class="skeleton" style="height:380px"></div>').join('');
+      const params = new URLSearchParams();
+      if (state.category) params.set('category', state.category);
+      if (state.q) params.set('q', state.q);
+      if (state.min) params.set('min', state.min);
+      if (state.max) params.set('max', state.max);
+      if (state.sort) params.set('sort', state.sort);
+      if (state.featured) params.set('featured', '1');
+
+      try {
+        const products = await API.get('/api/products?' + params.toString());
+        document.getElementById('result-count').textContent = products.length;
+        document.getElementById('product-grid').innerHTML = products.length
+          ? products.map(cardHtml).join('')
+          : '<div class="empty" style="grid-column:1/-1"><div class="big">🧣</div>沒有符合條件的商品，試著調整篩選條件。</div>';
+      } catch (err) {
+        grid.innerHTML = `<div class="empty" style="grid-column:1/-1">載入失敗：${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    // 事件綁定
+    let searchTimer;
+    document.getElementById('search-input').addEventListener('input', (e) => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => { state.q = e.target.value.trim(); loadProducts(); }, 300);
+    });
+    document.getElementById('min-price').addEventListener('input', (e) => { state.min = e.target.value; loadProducts(); });
+    document.getElementById('max-price').addEventListener('input', (e) => { state.max = e.target.value; loadProducts(); });
+    document.getElementById('sort-select').addEventListener('change', (e) => { state.sort = e.target.value; loadProducts(); });
+    document.getElementById('reset-btn').addEventListener('click', () => {
+      state.category = ''; state.featured = false; state.q = ''; state.min = ''; state.max = ''; state.sort = '';
+      document.getElementById('search-input').value = '';
+      document.getElementById('min-price').value = '';
+      document.getElementById('max-price').value = '';
+      document.getElementById('sort-select').value = '';
+      setActiveChip('');
+      loadProducts();
+    });
+    document.querySelector('[data-featured]').addEventListener('click', (e) => {
+      e.preventDefault();
+      state.featured = true; state.category = '';
+      setActiveChip('__featured');
+      loadProducts();
+      document.getElementById('shop').scrollIntoView({ behavior: 'smooth' });
+    });
+
+    loadCategories();
+    loadProducts();
+  </script>
+</body>
+</html>

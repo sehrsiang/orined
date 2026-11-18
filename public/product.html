@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>商品詳情 · AURAFIT</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <header id="site-header"></header>
+
+  <main class="container" id="detail-root">
+    <div class="skeleton" style="height:520px;margin:34px 0"></div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-bottom">© 2026 <span data-site-name>AURAFIT</span>. 本網站為示範用途。</div>
+  </footer>
+
+  <script src="/js/app.js"></script>
+  <script>
+    renderHeader('');
+
+    const root = document.getElementById('detail-root');
+    const productId = new URLSearchParams(location.search).get('id');
+    let product = null;
+    let chosen = { size: '', color: '', qty: 1 };
+
+    function render() {
+      const soldOut = product.stock <= 0;
+      root.innerHTML = `
+        <div class="breadcrumb">
+          <a href="/index.html">首頁</a> ／
+          <a href="/index.html">${escapeHtml(product.category_name || '商品')}</a> ／
+          <span>${escapeHtml(product.name)}</span>
+        </div>
+        <div class="detail">
+          <div class="detail-media"><img src="${escapeHtml(product.image)}" alt="${escapeHtml(product.name)}" /></div>
+          <div class="detail-info">
+            <span class="card-cat">${escapeHtml(product.category_name || '')}</span>
+            <h1>${escapeHtml(product.name)}</h1>
+            <div class="price">${formatMoney(product.price)}</div>
+            <p class="desc">${escapeHtml(product.description)}</p>
+
+            ${product.sizes.length ? `
+              <div class="opt-group">
+                <h4>尺寸</h4>
+                <div class="opt-list" id="size-list">
+                  ${product.sizes.map((s) => `<button class="opt" data-size="${escapeHtml(s)}">${escapeHtml(s)}</button>`).join('')}
+                </div>
+              </div>` : ''}
+
+            ${product.colors.length ? `
+              <div class="opt-group">
+                <h4>顏色</h4>
+                <div class="opt-list" id="color-list">
+                  ${product.colors.map((c) => `<button class="opt" data-color="${escapeHtml(c)}">${escapeHtml(c)}</button>`).join('')}
+                </div>
+              </div>` : ''}
+
+            <div class="opt-group">
+              <h4>數量</h4>
+              <div class="qty">
+                <button id="qty-minus">−</button>
+                <span id="qty-value">1</span>
+                <button id="qty-plus">+</button>
+              </div>
+              <span class="stock-note" style="margin-left:12px">
+                ${soldOut ? '目前缺貨' : `庫存 ${product.stock} 件`}
+              </span>
+            </div>
+
+            <div class="detail-actions">
+              <button class="btn btn-dark" id="add-cart" ${soldOut ? 'disabled' : ''}>加入購物車</button>
+              <button class="btn" id="buy-now" ${soldOut ? 'disabled' : ''}>立即購買</button>
+            </div>
+
+            <div class="meta-list">
+              <div>· 滿 NT$2,000 免運費</div>
+              <div>· 7 天鑑賞期，安心退換貨</div>
+              <div>· 出貨時間：下單後 1–3 個工作日</div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      // 尺寸 / 顏色
+      const sizeList = document.getElementById('size-list');
+      if (sizeList) {
+        sizeList.addEventListener('click', (e) => {
+          const btn = e.target.closest('.opt');
+          if (!btn) return;
+          chosen.size = btn.dataset.size;
+          sizeList.querySelectorAll('.opt').forEach((b) => b.classList.toggle('active', b === btn));
+        });
+      }
+      const colorList = document.getElementById('color-list');
+      if (colorList) {
+        colorList.addEventListener('click', (e) => {
+          const btn = e.target.closest('.opt');
+          if (!btn) return;
+          chosen.color = btn.dataset.color;
+          colorList.querySelectorAll('.opt').forEach((b) => b.classList.toggle('active', b === btn));
+        });
+      }
+
+      document.getElementById('qty-minus').onclick = () => { chosen.qty = Math.max(1, chosen.qty - 1); document.getElementById('qty-value').textContent = chosen.qty; };
+      document.getElementById('qty-plus').onclick = () => { chosen.qty = Math.min(product.stock, chosen.qty + 1); document.getElementById('qty-value').textContent = chosen.qty; };
+
+      const add = (redirect) => {
+        if (product.sizes.length && !chosen.size) return toast('請選擇尺寸', 'error');
+        if (product.colors.length && !chosen.color) return toast('請選擇顏色', 'error');
+        Cart.add(product, chosen);
+        toast('已加入購物車', 'success');
+        if (redirect) setTimeout(() => (window.location.href = '/cart.html'), 500);
+      };
+      document.getElementById('add-cart').onclick = () => add(false);
+      document.getElementById('buy-now').onclick = () => add(true);
+    }
+
+    (async () => {
+      if (!productId) {
+        root.innerHTML = '<div class="empty"><div class="big">🔍</div>找不到此商品</div>';
+        return;
+      }
+      try {
+        product = await API.get('/api/products/' + productId);
+        render();
+      } catch (err) {
+        root.innerHTML = `<div class="empty"><div class="big">😕</div>${escapeHtml(err.message)}<br><br><a class="btn btn-dark" href="/index.html">回到商品列表</a></div>`;
+      }
+    })();
+  </script>
+</body>
+</html>

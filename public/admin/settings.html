@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>網站設定 · AURAFIT 後台</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="stylesheet" href="/admin/admin.css" />
+</head>
+<body class="admin">
+  <div class="admin-layout">
+    <aside class="sidebar" id="admin-sidebar"></aside>
+    <main class="admin-main">
+      <div class="admin-head">
+        <div>
+          <h1>網站設定</h1>
+          <p>修改品牌名稱與樣式，儲存後立即套用到前台與後台</p>
+        </div>
+      </div>
+
+      <div class="card-row" style="display:block">
+        <form id="site-form" style="max-width:640px">
+          <div class="field" style="margin-bottom:18px">
+            <label>網站名稱 / 服飾品牌名 *</label>
+            <input id="s-name" maxlength="30" required placeholder="例如：AURAFIT" />
+          </div>
+
+          <div class="field" style="margin-bottom:18px">
+            <label>品牌名稱樣式 *</label>
+            <div class="style-grid" id="style-grid"></div>
+          </div>
+
+          <div class="field" style="margin-bottom:20px">
+            <label>預覽（深色底，與後台側邊欄相同）</label>
+            <div class="preview-bar">
+              <span class="brand-preview" id="preview"></span>
+              <span class="muted">前台為白底、後台側邊欄為深底，樣式會自動對應</span>
+            </div>
+          </div>
+
+          <div class="row-actions">
+            <button type="submit" class="btn btn-dark">儲存</button>
+            <button type="button" class="btn btn-ghost" id="reset-btn">還原預設（AURAFIT + 雙色）</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card-row" style="display:block;margin-top:24px">
+        <form id="account-form" style="max-width:640px">
+          <h2 style="font-family:var(--serif);font-size:19px;margin:0 0 6px">管理員帳號</h2>
+          <p class="hint" style="margin:0 0 16px">變更登入帳號（Email）或密碼，需先輸入目前的密碼確認身分。</p>
+
+          <div class="field" style="margin-bottom:16px">
+            <label>顯示名稱</label>
+            <input id="a-name" maxlength="30" />
+          </div>
+          <div class="field" style="margin-bottom:16px">
+            <label>登入帳號（Email）*</label>
+            <input id="a-email" type="email" required />
+          </div>
+          <div class="field" style="margin-bottom:16px">
+            <label>目前的密碼 *</label>
+            <input id="a-current" type="password" required autocomplete="current-password" />
+          </div>
+          <div class="form-row-2">
+            <div class="field">
+              <label>新密碼（留空表示不變更）</label>
+              <input id="a-new" type="password" minlength="6" autocomplete="new-password" />
+            </div>
+            <div class="field">
+              <label>確認新密碼</label>
+              <input id="a-confirm" type="password" minlength="6" autocomplete="new-password" />
+            </div>
+          </div>
+
+          <div class="row-actions" style="margin-top:20px">
+            <button type="submit" class="btn btn-dark">儲存帳號設定</button>
+          </div>
+        </form>
+      </div>
+
+      <p class="hint" style="margin-top:16px">
+        所有資料（商品、分類、訂單、付款方式與此處設定）都儲存在伺服器的資料庫檔案中，關閉網頁或重新開啟都會保留。
+      </p>
+    </main>
+  </div>
+
+  <script src="/js/app.js"></script>
+  <script src="/admin/admin.js"></script>
+  <script>
+    if (requireAdmin()) { renderSidebar('settings'); load(); loadAccount(); }
+
+    let currentStyle = DEFAULT_BRAND_STYLE;
+    let styleOptions = BRAND_STYLES;
+
+    function typedName() {
+      return document.getElementById('s-name').value.trim() || DEFAULT_SITE_NAME;
+    }
+
+    function paint() {
+      const name = typedName();
+
+      // 大預覽
+      const preview = document.getElementById('preview');
+      preview.className = 'brand-preview brand-style-' + currentStyle;
+      preview.innerHTML = brandHtml(name, currentStyle);
+
+      // 各樣式選項（每個都用目前輸入的名稱即時呈現）
+      document.getElementById('style-grid').innerHTML = styleOptions.map((s) => `
+        <label class="style-opt ${s.key === currentStyle ? 'active' : ''}">
+          <input type="radio" name="bstyle" value="${s.key}" ${s.key === currentStyle ? 'checked' : ''} />
+          <span class="brand-preview brand-style-${s.key}">${brandHtml(name, s.key)}</span>
+          <em>${escapeHtml(s.label)}</em>
+        </label>`).join('');
+    }
+
+    document.getElementById('s-name').addEventListener('input', paint);
+    document.getElementById('style-grid').addEventListener('change', (e) => {
+      if (e.target.name !== 'bstyle') return;
+      currentStyle = e.target.value;
+      paint();
+    });
+
+    async function load() {
+      try {
+        const st = await API.get('/api/admin/settings');
+        document.getElementById('s-name').value = st.site_name || DEFAULT_SITE_NAME;
+        currentStyle = st.site_name_style || DEFAULT_BRAND_STYLE;
+        if (Array.isArray(st.brand_styles) && st.brand_styles.length) {
+          styleOptions = st.brand_styles.map((k) => BRAND_STYLES.find((s) => s.key === k) || { key: k, label: k });
+        }
+        paint();
+      } catch (err) { showError(err); }
+    }
+
+    document.getElementById('site-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const st = await API.put('/api/admin/settings', {
+          site_name: typedName(),
+          site_name_style: currentStyle,
+        });
+        siteCache = st;            // 讓目前頁面立即沿用新設定
+        currentStyle = st.site_name_style;
+        document.getElementById('s-name').value = st.site_name;
+        applyBranding();
+        paint();
+        toast('網站設定已更新', 'success');
+      } catch (err) { showError(err); }
+    });
+
+    document.getElementById('reset-btn').onclick = () => {
+      document.getElementById('s-name').value = DEFAULT_SITE_NAME;
+      currentStyle = DEFAULT_BRAND_STYLE;
+      paint();
+    };
+
+    /* ---------- 管理員帳號（名稱 / Email / 密碼） ---------- */
+    async function loadAccount() {
+      try {
+        const acc = await API.get('/api/admin/account');
+        document.getElementById('a-name').value = acc.name || '';
+        document.getElementById('a-email').value = acc.email || '';
+      } catch (err) { showError(err); }
+    }
+
+    document.getElementById('account-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const newPw = document.getElementById('a-new').value;
+      const confirmPw = document.getElementById('a-confirm').value;
+      if (newPw && newPw !== confirmPw) {
+        toast('兩次輸入的新密碼不一致', 'error');
+        return;
+      }
+      try {
+        const res = await API.put('/api/admin/account', {
+          current_password: document.getElementById('a-current').value,
+          name: document.getElementById('a-name').value.trim(),
+          email: document.getElementById('a-email').value.trim(),
+          new_password: newPw,
+        });
+        Auth.set(Auth.getToken(), res.user);   // 更新本機登入資訊
+        document.getElementById('account-form').reset();
+        loadAccount();
+        renderSidebar('settings');             // 側邊欄名稱同步更新
+        toast('帳號設定已更新', 'success');
+      } catch (err) { showError(err); }
+    });
+  </script>
+</body>
+</html>

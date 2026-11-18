@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>訂單管理 · AURAFIT 後台</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="stylesheet" href="/admin/admin.css" />
+</head>
+<body class="admin">
+  <div class="admin-layout">
+    <aside class="sidebar" id="admin-sidebar"></aside>
+    <main class="admin-main">
+      <div class="admin-head">
+        <div>
+          <h1>訂單管理</h1>
+          <p>查看訂單明細並更新出貨狀態</p>
+        </div>
+        <div class="field">
+          <select id="status-filter" style="border:1px solid var(--line);border-radius:999px;padding:9px 16px;background:#fff;outline:none">
+            <option value="">全部狀態</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr><th>訂單編號</th><th>客戶</th><th>聯絡電話</th><th>品項</th><th>金額</th><th>付款方式</th><th>狀態</th><th>下單時間</th><th>操作</th></tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+
+  <div class="modal-mask" id="modal" hidden>
+    <div class="modal">
+      <h3>訂單詳情</h3>
+      <div id="detail"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="close-btn">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/app.js"></script>
+  <script src="/admin/admin.js"></script>
+  <script>
+    let orders = [];
+    let statusFilter = '';
+
+    if (requireAdmin()) { renderSidebar('orders'); init(); }
+
+    function init() {
+      const sel = document.getElementById('status-filter');
+      sel.innerHTML = '<option value="">全部狀態</option>' +
+        Object.keys(ORDER_STATUS_LABEL).map((k) => `<option value="${k}">${ORDER_STATUS_LABEL[k]}</option>`).join('');
+      sel.onchange = (e) => { statusFilter = e.target.value; load(); };
+
+      const focus = new URLSearchParams(location.search).get('focus');
+      load().then(() => { if (focus) openDetail(Number(focus)); });
+    }
+
+    async function load() {
+      try {
+        const q = statusFilter ? '?status=' + statusFilter : '';
+        orders = await API.get('/api/admin/orders' + q);
+        document.getElementById('rows').innerHTML = orders.length
+          ? orders.map((o) => `
+            <tr>
+              <td><b>#${o.id}</b></td>
+              <td>${escapeHtml(o.customer_name)}<br><span class="muted" style="font-size:12px">${escapeHtml(o.user_email || '—')}</span></td>
+              <td>${escapeHtml(o.phone)}</td>
+              <td>${o.items.length} 項</td>
+              <td>${formatMoney(o.total)}</td>
+              <td class="muted" style="font-size:13px">${escapeHtml(o.payment_name || '—')}</td>
+              <td>${statusBadge(o.status)}</td>
+              <td class="muted" style="font-size:12.5px">${escapeHtml(o.created_at)}</td>
+              <td><button class="btn btn-ghost btn-sm" data-view="${o.id}">查看</button></td>
+            </tr>`).join('')
+          : '<tr><td colspan="9" class="empty-row">沒有符合條件的訂單</td></tr>';
+      } catch (err) { showError(err); }
+    }
+
+    function openDetail(id) {
+      const o = orders.find((x) => x.id === id);
+      if (!o) return;
+      document.getElementById('modal').hidden = false;
+      document.getElementById('detail').innerHTML = `
+        <div class="order-detail-head">
+          <div class="kv"><b>訂單編號：</b>#${o.id}</div>
+          <div>${statusBadge(o.status)}</div>
+        </div>
+        <div class="kv" style="margin-bottom:14px">
+          <div><b>客戶：</b>${escapeHtml(o.customer_name)}（${escapeHtml(o.user_email || '—')}）</div>
+          <div><b>電話：</b>${escapeHtml(o.phone)}</div>
+          <div><b>地址：</b>${escapeHtml(o.address)}</div>
+          <div><b>付款方式：</b>${escapeHtml(o.payment_name || '—')}</div>
+          ${o.note ? `<div><b>備註：</b>${escapeHtml(o.note)}</div>` : ''}
+          <div><b>下單時間：</b>${escapeHtml(o.created_at)}</div>
+        </div>
+        ${o.payment_note ? `<div class="kv" style="margin-bottom:14px"><b>付款說明（下單時）：</b><div style="white-space:pre-wrap;background:#faf9f7;border:1px dashed var(--line);border-radius:10px;padding:12px 14px;margin-top:6px">${escapeHtml(o.payment_note)}</div></div>` : ''}
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr><th>商品</th><th>規格</th><th>單價</th><th>數量</th><th>小計</th></tr></thead>
+            <tbody>
+              ${o.items.map((it) => `
+                <tr>
+                  <td>${escapeHtml(it.name)}</td>
+                  <td class="muted">${escapeHtml([it.size, it.color].filter(Boolean).join(' / ') || '—')}</td>
+                  <td>${formatMoney(it.price)}</td>
+                  <td>${it.qty}</td>
+                  <td>${formatMoney(it.price * it.qty)}</td>
+                </tr>`).join('')}
+              <tr><td colspan="4" style="text-align:right"><b>合計</b></td><td><b>${formatMoney(o.total)}</b></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="field" style="margin-top:18px">
+          <label>更新訂單狀態</label>
+          <select id="status-select" style="border:1px solid var(--line);border-radius:8px;padding:9px 12px;background:#fbfaf8;width:100%;outline:none">
+            ${Object.keys(ORDER_STATUS_LABEL).map((k) => `<option value="${k}" ${k === o.status ? 'selected' : ''}>${ORDER_STATUS_LABEL[k]}</option>`).join('')}
+          </select>
+        </div>
+        <div class="modal-actions" style="margin-top:14px">
+          <button class="btn btn-dark btn-sm" id="save-status">儲存狀態</button>
+        </div>
+      `;
+      document.getElementById('save-status').onclick = async () => {
+        const status = document.getElementById('status-select').value;
+        try {
+          await API.patch('/api/admin/orders/' + o.id, { status });
+          toast('已更新訂單狀態', 'success');
+          document.getElementById('modal').hidden = true;
+          load();
+        } catch (err) { showError(err); }
+      };
+    }
+
+    document.getElementById('rows').addEventListener('click', (e) => {
+      const id = e.target.dataset.view;
+      if (id) openDetail(Number(id));
+    });
+    document.getElementById('close-btn').onclick = () => { document.getElementById('modal').hidden = true; };
+    document.getElementById('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') document.getElementById('modal').hidden = true; });
+  </script>
+</body>
+</html>

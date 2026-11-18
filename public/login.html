@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>登入 / 註冊 · AURAFIT</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <header id="site-header"></header>
+
+  <main class="container">
+    <div class="auth-wrap">
+      <div class="auth-card">
+        <div id="already-box" hidden>
+          <h3 style="margin:0 0 6px;font-family:var(--serif)">你已經登入了</h3>
+          <p class="muted" id="already-text" style="margin:0 0 16px;font-size:14px"></p>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <a class="btn btn-dark btn-sm" id="go-admin" href="/admin/" hidden>🛠 前往後台</a>
+            <a class="btn btn-dark btn-sm" href="/index.html">🏬 前往前台商店</a>
+            <button class="btn btn-ghost btn-sm" id="switch-account">切換帳號</button>
+          </div>
+          <hr style="border:none;border-top:1px solid var(--line);margin:22px 0" />
+        </div>
+
+        <div id="auth-forms">
+        <div class="tabs">
+          <button id="tab-login" class="active">登入</button>
+          <button id="tab-register">註冊</button>
+        </div>
+
+        <form id="login-form" class="form-grid">
+          <div class="field">
+            <label>Email</label>
+            <input id="l-email" type="email" placeholder="you@example.com" required />
+          </div>
+          <div class="field">
+            <label>密碼</label>
+            <input id="l-password" type="password" placeholder="••••••••" required />
+          </div>
+          <button class="btn btn-dark btn-block" type="submit">登入</button>
+          <p class="hint">
+            示範帳號：<br />
+            會員 <code>user@aurafit.com</code> / <code>user1234</code><br />
+            管理員 <code>admin@aurafit.com</code> / <code>admin1234</code>
+          </p>
+        </form>
+
+        <form id="register-form" class="form-grid" hidden>
+          <div class="field">
+            <label>姓名</label>
+            <input id="r-name" type="text" placeholder="王小明" required />
+          </div>
+          <div class="field">
+            <label>Email</label>
+            <input id="r-email" type="email" placeholder="you@example.com" required />
+          </div>
+          <div class="field">
+            <label>密碼（至少 6 個字元）</label>
+            <input id="r-password" type="password" placeholder="••••••••" required />
+          </div>
+          <button class="btn btn-dark btn-block" type="submit">建立帳號</button>
+        </form>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-bottom">© 2026 <span data-site-name>AURAFIT</span>. 本網站為示範用途。</div>
+  </footer>
+
+  <script src="/js/app.js"></script>
+  <script>
+    renderHeader('');
+
+    const redirect = new URLSearchParams(location.search).get('redirect') || '/index.html';
+
+    // 已登入時不需重新登入，直接提供前台／後台切換
+    const currentUser = Auth.getUser();
+    if (Auth.isLoggedIn() && currentUser) {
+      document.getElementById('already-box').hidden = false;
+      document.getElementById('auth-forms').hidden = true;
+      document.getElementById('already-text').textContent =
+        `目前身分：${currentUser.name}（${currentUser.email}）· ${currentUser.role === 'admin' ? '管理員' : '一般會員'}`;
+      if (currentUser.role === 'admin') document.getElementById('go-admin').hidden = false;
+      document.getElementById('switch-account').onclick = async () => {
+        try { await API.post('/api/auth/logout'); } catch (_) {}
+        Auth.clear();
+        location.reload();
+      };
+    }
+
+    document.getElementById('tab-login').onclick = () => switchTab(true);
+    document.getElementById('tab-register').onclick = () => switchTab(false);
+    function switchTab(isLogin) {
+      document.getElementById('tab-login').classList.toggle('active', isLogin);
+      document.getElementById('tab-register').classList.toggle('active', !isLogin);
+      document.getElementById('login-form').hidden = !isLogin;
+      document.getElementById('register-form').hidden = isLogin;
+    }
+
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = e.target.querySelector('button');
+      btn.disabled = true;
+      try {
+        const res = await API.post('/api/auth/login', {
+          email: document.getElementById('l-email').value.trim(),
+          password: document.getElementById('l-password').value,
+        });
+        Auth.set(res.token, res.user);
+        toast('登入成功', 'success');
+        setTimeout(() => (window.location.href = res.user.role === 'admin' ? '/admin/' : redirect), 500);
+      } catch (err) {
+        toast(err.message, 'error');
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('register-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = e.target.querySelector('button');
+      btn.disabled = true;
+      try {
+        const res = await API.post('/api/auth/register', {
+          name: document.getElementById('r-name').value.trim(),
+          email: document.getElementById('r-email').value.trim(),
+          password: document.getElementById('r-password').value,
+        });
+        Auth.set(res.token, res.user);
+        toast('註冊成功，已自動登入', 'success');
+        setTimeout(() => (window.location.href = redirect), 500);
+      } catch (err) {
+        toast(err.message, 'error');
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

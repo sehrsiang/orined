@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>付款方式 · AURAFIT 後台</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="stylesheet" href="/admin/admin.css" />
+</head>
+<body class="admin">
+  <div class="admin-layout">
+    <aside class="sidebar" id="admin-sidebar"></aside>
+    <main class="admin-main">
+      <div class="admin-head">
+        <div>
+          <h1>付款方式</h1>
+          <p>決定結帳頁提供給客人的付款選項，可隨時開通或關閉</p>
+        </div>
+        <button class="btn btn-dark btn-sm" id="add-btn">＋ 新增付款方式</button>
+      </div>
+
+      <div class="card-row">
+        <div>
+          <b>在結帳頁顯示「付款方式」區塊</b>
+          <div class="muted">關閉後，客人結帳時不會看到、也不需要選擇付款方式（適合改由你線下收款再人工聯繫）。下方的逐項設定會保留，下次打開即恢復。</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="master-toggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div id="warn" class="admin-mode-bar" style="border-left-color: var(--red)" hidden>
+        <span class="mode-pill" style="background:var(--red)">注意</span>
+        <span class="muted">目前沒有開通任何付款方式，客人將無法結帳。</span>
+      </div>
+
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr><th>付款方式</th><th>付款說明（結帳時顯示給客人）</th><th>狀態</th><th>操作</th></tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+
+      <p class="hint" style="margin-top:16px">
+        提示：內建項目可「停用」但不可刪除；自訂項目可自由編輯或刪除。
+        付款說明支援換行，例如匯款帳號或「已完成訂購，請至門市付款」等指示。
+      </p>
+    </main>
+  </div>
+
+  <div class="modal-mask" id="modal" hidden>
+    <div class="modal" style="max-width:560px">
+      <h3 id="modal-title">新增付款方式</h3>
+      <form id="pm-form" class="form-grid">
+        <input type="hidden" id="m-id" />
+        <div class="field">
+          <label>名稱 *（結帳時顯示的名稱）</label>
+          <input id="m-name" required placeholder="例如：門市付款 / 銀行轉帳" />
+        </div>
+        <div class="field">
+          <label>付款說明（可換行）</label>
+          <textarea id="m-instructions" rows="5" placeholder="例如：&#10;已完成訂購，請至台北信義門市付款&#10;地址：台北市信義區市府路 1 號&#10;營業時間：11:00–21:00"></textarea>
+        </div>
+        <label class="checkbox-row"><input type="checkbox" id="m-enabled" checked /> 立即開通（顯示於結帳頁）</label>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" id="cancel-btn">取消</button>
+          <button type="submit" class="btn btn-dark">儲存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/js/app.js"></script>
+  <script src="/admin/admin.js"></script>
+  <script>
+    let methods = [];
+    let sectionEnabled = true;
+    if (requireAdmin()) { renderSidebar('payments'); load(); }
+
+    async function load() {
+      try {
+        const [ms, st] = await Promise.all([
+          API.get('/api/admin/payment-methods'),
+          API.get('/api/admin/settings'),
+        ]);
+        methods = ms;
+        sectionEnabled = !!st.checkout_payment_enabled;
+        document.getElementById('master-toggle').checked = sectionEnabled;
+
+        // 只有「整區開啟」且「沒有任何逐項開通」才需要警告
+        document.getElementById('warn').hidden = !sectionEnabled || methods.some((m) => m.enabled);
+
+        document.getElementById('rows').innerHTML = methods.length
+          ? methods.map((m) => `
+            <tr>
+              <td>
+                <b>${escapeHtml(m.name)}</b>
+                <div class="muted" style="font-size:12px">
+                  <code>${escapeHtml(m.code)}</code>${m.builtin ? ' · 內建' : ' · 自訂'}
+                </div>
+              </td>
+              <td class="muted" style="font-size:13px;white-space:pre-wrap;max-width:420px">${escapeHtml(m.instructions || '—')}</td>
+              <td><span class="tag ${m.enabled ? 'on' : 'off'}">${m.enabled ? '已開通' : '已停用'}</span></td>
+              <td>
+                <div class="row-actions">
+                  <button class="btn ${m.enabled ? 'btn-ghost' : 'btn-dark'} btn-sm" data-toggle="${m.id}">${m.enabled ? '停用' : '開通'}</button>
+                  <button class="btn btn-ghost btn-sm" data-edit="${m.id}">編輯</button>
+                  ${m.builtin ? '' : `<button class="btn btn-danger btn-sm" data-del="${m.id}">刪除</button>`}
+                </div>
+              </td>
+            </tr>`).join('')
+          : '<tr><td colspan="4" class="empty-row">尚無付款方式</td></tr>';
+      } catch (err) { showError(err); }
+    }
+
+    function openModal(m) {
+      document.getElementById('modal').hidden = false;
+      document.getElementById('modal-title').textContent = m ? '編輯付款方式' : '新增付款方式';
+      document.getElementById('m-id').value = m ? m.id : '';
+      document.getElementById('m-name').value = m ? m.name : '';
+      document.getElementById('m-instructions').value = m ? m.instructions : '';
+      document.getElementById('m-enabled').checked = m ? !!m.enabled : true;
+    }
+    function closeModal() { document.getElementById('modal').hidden = true; }
+
+    document.getElementById('add-btn').onclick = () => openModal(null);
+    document.getElementById('cancel-btn').onclick = closeModal;
+    document.getElementById('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
+
+    // 整區總開關
+    document.getElementById('master-toggle').addEventListener('change', async (e) => {
+      try {
+        const st = await API.put('/api/admin/settings', { checkout_payment_enabled: e.target.checked });
+        sectionEnabled = !!st.checkout_payment_enabled;
+        toast(sectionEnabled ? '結帳頁已顯示付款方式區塊' : '結帳頁已隱藏付款方式區塊', 'success');
+        load();
+      } catch (err) { showError(err); e.target.checked = sectionEnabled; }
+    });
+
+    document.getElementById('rows').addEventListener('click', async (e) => {
+      const toggleId = e.target.dataset.toggle;
+      const editId = e.target.dataset.edit;
+      const delId = e.target.dataset.del;
+      try {
+        if (toggleId) {
+          const m = methods.find((x) => x.id === Number(toggleId));
+          await API.put('/api/admin/payment-methods/' + toggleId, { enabled: !m.enabled });
+          toast(m.enabled ? '已停用' : '已開通', 'success');
+          load();
+        } else if (editId) {
+          openModal(methods.find((x) => x.id === Number(editId)));
+        } else if (delId) {
+          const m = methods.find((x) => x.id === Number(delId));
+          if (!(await confirmDialog(`確定刪除付款方式「${m.name}」？`))) return;
+          await API.del('/api/admin/payment-methods/' + delId);
+          toast('已刪除', 'success');
+          load();
+        }
+      } catch (err) { showError(err); }
+    });
+
+    document.getElementById('pm-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const id = document.getElementById('m-id').value;
+      const payload = {
+        name: document.getElementById('m-name').value.trim(),
+        instructions: document.getElementById('m-instructions').value,
+        enabled: document.getElementById('m-enabled').checked,
+      };
+      try {
+        if (id) await API.put('/api/admin/payment-methods/' + id, payload);
+        else await API.post('/api/admin/payment-methods', payload);
+        toast('已儲存', 'success');
+        closeModal();
+        load();
+      } catch (err) { showError(err); }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>營運儀表板 · AURAFIT 後台</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="stylesheet" href="/admin/admin.css" />
+</head>
+<body class="admin">
+  <div class="admin-layout">
+    <aside class="sidebar" id="admin-sidebar"></aside>
+    <main class="admin-main">
+      <div class="admin-head">
+        <div>
+          <h1>營運儀表板</h1>
+          <p>掌握商品、訂單與銷售概況</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="refresh">↻ 重新整理</button>
+      </div>
+
+      <div class="stat-grid" id="stats"></div>
+
+      <div class="cols-2">
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr><th colspan="4" style="font-size:14px;color:var(--ink)">最新訂單</th></tr>
+              <tr><th>訂單</th><th>客戶</th><th>金額</th><th>狀態</th></tr></thead>
+            <tbody id="recent-orders"></tbody>
+          </table>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr><th colspan="3" style="font-size:14px;color:var(--ink)">熱銷商品 Top 5</th></tr>
+              <tr><th>商品</th><th>售出</th><th>銷售額</th></tr></thead>
+            <tbody id="top-products"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="cols-2" style="margin-top:20px">
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr><th colspan="2" style="font-size:14px;color:var(--ink)">庫存偏低（≤20）</th></tr></thead>
+            <tbody id="low-stock"></tbody>
+          </table>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr><th colspan="2" style="font-size:14px;color:var(--ink)">訂單狀態分佈</th></tr></thead>
+            <tbody id="status-dist"></tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/js/app.js"></script>
+  <script src="/admin/admin.js"></script>
+  <script>
+    if (requireAdmin()) {
+      renderSidebar('dashboard');
+      load();
+      document.getElementById('refresh').onclick = load;
+    }
+
+    async function load() {
+      try {
+        const s = await API.get('/api/admin/stats');
+        document.getElementById('stats').innerHTML = `
+          <div class="stat-card"><div class="label">總銷售額</div><div class="value gold">${formatMoney(s.revenue)}</div><div class="foot">不含已取消訂單</div></div>
+          <div class="stat-card"><div class="label">訂單總數</div><div class="value">${s.orderCount}</div><div class="foot">所有歷史訂單</div></div>
+          <div class="stat-card"><div class="label">商品數量</div><div class="value">${s.productCount}</div><div class="foot">${s.categoryCount} 個分類</div></div>
+          <div class="stat-card"><div class="label">會員人數</div><div class="value">${s.customerCount}</div><div class="foot">不含管理員</div></div>
+        `;
+
+        document.getElementById('recent-orders').innerHTML = s.recentOrders.length
+          ? s.recentOrders.map((o) => `
+              <tr>
+                <td><a href="/admin/orders.html?focus=${o.id}" style="font-weight:600">#${o.id}</a></td>
+                <td>${escapeHtml(o.customer_name)}</td>
+                <td>${formatMoney(o.total)}</td>
+                <td>${statusBadge(o.status)}</td>
+              </tr>`).join('')
+          : '<tr><td colspan="4" class="empty-row">尚無訂單</td></tr>';
+
+        document.getElementById('top-products').innerHTML = s.topProducts.length
+          ? s.topProducts.map((p) => `
+              <tr><td>${escapeHtml(p.name)}</td><td>${p.sold}</td><td>${formatMoney(p.revenue)}</td></tr>`).join('')
+          : '<tr><td colspan="3" class="empty-row">尚無銷售紀錄</td></tr>';
+
+        document.getElementById('low-stock').innerHTML = s.lowStock.length
+          ? s.lowStock.map((p) => `<tr><td>${escapeHtml(p.name)}</td><td><span class="tag ${p.stock <= 5 ? 'off' : ''}">剩 ${p.stock} 件</span></td></tr>`).join('')
+          : '<tr><td colspan="2" class="empty-row">庫存充足</td></tr>';
+
+        const byStatus = Object.fromEntries(s.byStatus.map((r) => [r.status, r.n]));
+        document.getElementById('status-dist').innerHTML = Object.keys(ORDER_STATUS_LABEL)
+          .map((k) => `<tr><td>${statusBadge(k)}</td><td>${byStatus[k] || 0} 筆</td></tr>`).join('');
+      } catch (err) {
+        showError(err);
+      }
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>購物車 · AURAFIT</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <header id="site-header"></header>
+
+  <main class="container">
+    <div class="breadcrumb" style="margin:22px 0 8px"><a href="/index.html">首頁</a> ／ 購物車</div>
+    <div class="cart-layout">
+      <div>
+        <div class="panel">
+          <h3>購物明細</h3>
+          <div id="cart-items"></div>
+        </div>
+
+        <div class="panel" style="margin-top:22px">
+          <h3>收件資訊</h3>
+          <div class="form-grid">
+            <div class="form-row-2">
+              <div class="field">
+                <label>收件人姓名 *</label>
+                <input id="f-name" type="text" placeholder="王小明" />
+              </div>
+              <div class="field">
+                <label>聯絡電話 *</label>
+                <input id="f-phone" type="text" placeholder="0912-345-678" />
+              </div>
+            </div>
+            <div class="field">
+              <label>收件地址 *</label>
+              <input id="f-address" type="text" placeholder="台北市信義區市府路 1 號" />
+            </div>
+            <div class="field">
+              <label>備註</label>
+              <textarea id="f-note" rows="3" placeholder="例如：希望週末到貨"></textarea>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:22px" id="payment-panel">
+          <h3>付款方式</h3>
+          <div id="payment-list" class="pay-list">
+            <div class="skeleton" style="height:56px"></div>
+            <div class="skeleton" style="height:56px"></div>
+          </div>
+          <div id="payment-note" class="pay-note" hidden></div>
+        </div>
+      </div>
+
+      <aside class="panel">
+        <h3>訂單摘要</h3>
+        <div id="summary"></div>
+        <button class="btn btn-dark btn-block" id="checkout-btn" style="margin-top:18px">前往結帳</button>
+        <p class="hint" id="login-hint"></p>
+      </aside>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-bottom">© 2026 <span data-site-name>AURAFIT</span>. 本網站為示範用途。</div>
+  </footer>
+
+  <script src="/js/app.js"></script>
+  <script>
+    renderHeader('');
+
+    function renderCart() {
+      const items = Cart.items();
+      const list = document.getElementById('cart-items');
+      const summary = document.getElementById('summary');
+
+      if (!items.length) {
+        list.innerHTML = `<div class="empty"><div class="big">🛍</div>購物車是空的<br><br><a class="btn btn-dark" href="/index.html">去逛逛</a></div>`;
+        summary.innerHTML = `<div class="summary-line"><span>商品金額</span><span>NT$ 0</span></div>`;
+        document.getElementById('checkout-btn').disabled = true;
+        return;
+      }
+
+      list.innerHTML = items.map((it, i) => `
+        <div class="cart-row">
+          <img src="${escapeHtml(it.image)}" alt="${escapeHtml(it.name)}" />
+          <div class="info">
+            <h4>${escapeHtml(it.name)}</h4>
+            <div class="variant">
+              ${it.size ? '尺寸 ' + escapeHtml(it.size) : ''}
+              ${it.color ? ' · 顏色 ' + escapeHtml(it.color) : ''}
+            </div>
+            <div class="variant" style="margin-top:6px">${formatMoney(it.price)}</div>
+          </div>
+          <div class="right">
+            <div class="qty">
+              <button data-act="dec" data-i="${i}">−</button>
+              <span>${it.qty}</span>
+              <button data-act="inc" data-i="${i}">+</button>
+            </div>
+            <div style="font-weight:700">${formatMoney(it.qty * it.price)}</div>
+            <button class="link-danger" data-act="rm" data-i="${i}">移除</button>
+          </div>
+        </div>
+      `).join('');
+
+      const subtotal = Cart.total();
+      const shipping = subtotal >= 2000 ? 0 : 120;
+      summary.innerHTML = `
+        <div class="summary-line"><span>商品金額</span><span>${formatMoney(subtotal)}</span></div>
+        <div class="summary-line"><span>運費</span><span>${shipping === 0 ? '免運' : formatMoney(shipping)}</span></div>
+        <div class="summary-total"><span>合計</span><span>${formatMoney(subtotal + shipping)}</span></div>
+      `;
+      document.getElementById('checkout-btn').disabled = false;
+    }
+
+    document.getElementById('cart-items').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      const i = Number(btn.dataset.i);
+      const items = Cart.items();
+      if (btn.dataset.act === 'inc') Cart.updateQty(i, items[i].qty + 1);
+      else if (btn.dataset.act === 'dec') Cart.updateQty(i, items[i].qty - 1);
+      else if (btn.dataset.act === 'rm') Cart.remove(i);
+      renderCart();
+    });
+
+    document.getElementById('checkout-btn').addEventListener('click', async () => {
+      const items = Cart.items();
+      if (!items.length) return;
+      if (!Auth.isLoggedIn()) {
+        toast('請先登入再結帳', 'error');
+        setTimeout(() => (window.location.href = '/login.html?redirect=/cart.html'), 700);
+        return;
+      }
+      const name = document.getElementById('f-name').value.trim();
+      const phone = document.getElementById('f-phone').value.trim();
+      const address = document.getElementById('f-address').value.trim();
+      const note = document.getElementById('f-note').value.trim();
+      if (!name || !phone || !address) return toast('請填寫收件人、電話與地址', 'error');
+      if (paymentSectionOn && !selectedPayment) return toast('請選擇付款方式', 'error');
+
+      const btn = document.getElementById('checkout-btn');
+      btn.disabled = true;
+      btn.textContent = '處理中…';
+      try {
+        const res = await API.post('/api/orders', {
+          items: items.map((i) => ({ product_id: i.product_id, qty: i.qty, size: i.size, color: i.color })),
+          customer_name: name, phone, address, note,
+          payment_method: selectedPayment,
+        });
+        Cart.clear();
+        toast(`下單成功！訂單編號 #${res.order_id}`, 'success');
+        setTimeout(() => (window.location.href = '/account.html'), 900);
+      } catch (err) {
+        toast(err.message, 'error');
+        btn.disabled = false;
+        btn.textContent = '前往結帳';
+      }
+    });
+
+    const hint = document.getElementById('login-hint');
+    if (!Auth.isLoggedIn()) {
+      hint.innerHTML = '尚未登入，<a href="/login.html?redirect=/cart.html" style="text-decoration:underline">前往登入</a>';
+    } else {
+      const u = Auth.getUser();
+      if (u) { document.getElementById('f-name').value = u.name || ''; }
+    }
+
+    /* 付款方式：由後台設定（整區總開關 + 逐項開通） */
+    let payMethods = [];
+    let selectedPayment = '';
+    let paymentSectionOn = true;
+
+    function showNote(m) {
+      const note = document.getElementById('payment-note');
+      if (m && m.instructions) {
+        note.textContent = m.instructions;
+        note.hidden = false;
+      } else {
+        note.hidden = true;
+      }
+    }
+
+    async function loadPayments() {
+      const panel = document.getElementById('payment-panel');
+      const box = document.getElementById('payment-list');
+      let cfg = { payment_enabled: true, methods: [] };
+      try { cfg = await API.get('/api/checkout-config'); } catch (_) {}
+
+      paymentSectionOn = cfg.payment_enabled !== false;
+
+      // 後台關閉整區 → 結帳頁不顯示付款方式
+      if (!paymentSectionOn) {
+        panel.hidden = true;
+        payMethods = [];
+        selectedPayment = '';
+        return;
+      }
+
+      panel.hidden = false;
+      payMethods = cfg.methods || [];
+      if (!payMethods.length) {
+        box.innerHTML = '<div class="empty" style="padding:24px">目前沒有可用的付款方式，請聯繫客服。</div>';
+        document.getElementById('checkout-btn').disabled = true;
+        return;
+      }
+      document.getElementById('checkout-btn').disabled = false;
+      box.innerHTML = payMethods.map((m, i) => `
+        <label class="pay-option ${i === 0 ? 'active' : ''}">
+          <input type="radio" name="pay" value="${escapeHtml(m.code)}" ${i === 0 ? 'checked' : ''} />
+          <span class="pay-name">${escapeHtml(m.name)}</span>
+        </label>`).join('');
+      selectedPayment = payMethods[0].code;
+      showNote(payMethods[0]);
+
+      box.onchange = (e) => {
+        if (e.target.name !== 'pay') return;
+        selectedPayment = e.target.value;
+        box.querySelectorAll('.pay-option').forEach((o) => o.classList.toggle('active', o.contains(e.target)));
+        showNote(payMethods.find((m) => m.code === selectedPayment));
+      };
+    }
+
+    renderCart();
+    loadPayments();
+    // 從快取返回時重新確認後台設定
+    window.addEventListener('pageshow', (e) => { if (e.persisted) loadPayments(); });
+  </script>
+</body>
+</html>

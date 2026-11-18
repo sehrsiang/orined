@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>商品管理 · AURAFIT 後台</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="stylesheet" href="/admin/admin.css" />
+</head>
+<body class="admin">
+  <div class="admin-layout">
+    <aside class="sidebar" id="admin-sidebar"></aside>
+    <main class="admin-main">
+      <div class="admin-head">
+        <div>
+          <h1>商品管理</h1>
+          <p>新增、編輯與下架商品</p>
+        </div>
+        <div style="display:flex;gap:10px">
+          <input id="search" type="search" placeholder="搜尋商品…"
+                 style="border:1px solid var(--line);border-radius:999px;padding:8px 16px;background:#fff;outline:none" />
+          <button class="btn btn-dark btn-sm" id="add-btn">＋ 新增商品</button>
+        </div>
+      </div>
+
+      <div class="swipe-list">
+        <div class="swipe-grid swipe-head">
+          <span>圖片</span><span>商品名稱</span><span>分類</span><span>價格</span>
+          <span>庫存</span><span>精選</span><span>狀態</span><span>操作</span>
+        </div>
+        <div id="rows"></div>
+      </div>
+      <p class="swipe-tip">在任一商品列上向左或向右滑動即可刪除（也可直接點右側「刪除」按鈕）。</p>
+    </main>
+  </div>
+
+  <!-- 新增/編輯 Modal -->
+  <div class="modal-mask" id="modal" hidden>
+    <div class="modal">
+      <h3 id="modal-title">新增商品</h3>
+      <form id="product-form" class="form-grid">
+        <input type="hidden" id="p-id" />
+        <div class="field">
+          <label>商品名稱 *</label>
+          <input id="p-name" required />
+        </div>
+        <div class="form-row-2">
+          <div class="field">
+            <label>分類</label>
+            <select id="p-category"></select>
+          </div>
+          <div class="field">
+            <label>價格 (NT$) *</label>
+            <input id="p-price" type="number" min="0" step="1" required />
+          </div>
+        </div>
+        <div class="form-row-2">
+          <div class="field">
+            <label>庫存數量 *</label>
+            <input id="p-stock" type="number" min="0" required />
+          </div>
+          <div class="field">
+            <label>尺寸（以逗號分隔）</label>
+            <input id="p-sizes" placeholder="S,M,L,XL" />
+          </div>
+        </div>
+        <div class="field">
+          <label>顏色（以逗號分隔）</label>
+          <input id="p-colors" placeholder="黑色,白色" />
+        </div>
+        <div class="field">
+          <label>圖片網址</label>
+          <input id="p-image" placeholder="https://..." />
+        </div>
+        <div class="field">
+          <label>商品描述</label>
+          <textarea id="p-description" rows="3"></textarea>
+        </div>
+        <div style="display:flex;gap:22px">
+          <label class="checkbox-row"><input type="checkbox" id="p-featured" /> 設為精選</label>
+          <label class="checkbox-row"><input type="checkbox" id="p-active" checked /> 上架中</label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" id="cancel-btn">取消</button>
+          <button type="submit" class="btn btn-dark">儲存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/js/app.js"></script>
+  <script src="/admin/admin.js"></script>
+  <script>
+    let products = [];
+    let categories = [];
+    let keyword = '';
+
+    if (requireAdmin()) {
+      renderSidebar('products');
+      boot();
+    }
+
+    async function boot() {
+      categories = await API.get('/api/categories');
+      document.getElementById('p-category').innerHTML =
+        '<option value="">未分類</option>' +
+        categories.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+      await load();
+    }
+
+    async function load() {
+      try {
+        products = await API.get('/api/admin/products');
+        render();
+      } catch (err) { showError(err); }
+    }
+
+    function render() {
+      const list = products.filter((p) => !keyword || p.name.toLowerCase().includes(keyword) || (p.category_name || '').includes(keyword));
+      document.getElementById('rows').innerHTML = list.length
+        ? list.map((p) => `
+          <div class="swipe-item" data-id="${p.id}" data-offset="0">
+            <div class="swipe-bg"><span>刪除</span><span>刪除</span></div>
+            <div class="swipe-grid swipe-content">
+              <span class="c-img">${p.image ? `<img class="thumb" src="${escapeHtml(p.image)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}</span>
+              <span class="c-name"><b>${escapeHtml(p.name)}</b><br><span class="muted" style="font-size:12.5px">${escapeHtml((p.sizes || []).join('/'))}</span></span>
+              <span>${escapeHtml(p.category_name || '—')}</span>
+              <span>${formatMoney(p.price)}</span>
+              <span>${p.stock <= 0 ? '<span class="tag off">缺貨</span>' : p.stock <= 20 ? `<span class="tag">${p.stock}</span>` : p.stock}</span>
+              <span>${p.featured ? '★' : '—'}</span>
+              <span><span class="tag ${p.active ? 'on' : 'off'}">${p.active ? '上架' : '下架'}</span></span>
+              <span class="c-act">
+                <button class="btn btn-ghost btn-sm" data-edit="${p.id}">編輯</button>
+                <button class="btn btn-danger btn-sm" data-del="${p.id}">刪除</button>
+              </span>
+            </div>
+          </div>`).join('')
+        : '<div class="empty-row">沒有符合的商品</div>';
+    }
+
+    function openModal(product) {
+      document.getElementById('modal').hidden = false;
+      document.getElementById('modal-title').textContent = product ? '編輯商品' : '新增商品';
+      document.getElementById('p-id').value = product ? product.id : '';
+      document.getElementById('p-name').value = product ? product.name : '';
+      document.getElementById('p-category').value = product && product.category_id ? product.category_id : '';
+      document.getElementById('p-price').value = product ? product.price : '';
+      document.getElementById('p-stock').value = product ? product.stock : '';
+      document.getElementById('p-sizes').value = product ? product.sizes.join(',') : '';
+      document.getElementById('p-colors').value = product ? product.colors.join(',') : '';
+      document.getElementById('p-image').value = product ? product.image : '';
+      document.getElementById('p-description').value = product ? product.description : '';
+      document.getElementById('p-featured').checked = product ? product.featured : false;
+      document.getElementById('p-active').checked = product ? product.active : true;
+    }
+    function closeModal() { document.getElementById('modal').hidden = true; }
+
+    document.getElementById('add-btn').onclick = () => openModal(null);
+    document.getElementById('cancel-btn').onclick = closeModal;
+    document.getElementById('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
+    document.getElementById('search').addEventListener('input', (e) => { keyword = e.target.value.trim().toLowerCase(); render(); });
+
+    /* ---------- 刪除商品（自訂確認視窗） ---------- */
+    async function requestDelete(id) {
+      const p = products.find((x) => x.id === Number(id));
+      if (!p) return;
+      if (!(await confirmDialog(`確定要刪除「${p.name}」嗎？此操作無法復原。`))) { render(); return; }
+      try {
+        await API.del('/api/admin/products/' + id);
+        toast('已刪除商品', 'success');
+        load();
+      } catch (err) { showError(err); render(); }
+    }
+
+    /* ---------- 點擊：編輯 / 刪除 ---------- */
+    let lastDragAt = 0;
+    document.getElementById('rows').addEventListener('click', (e) => {
+      if (Date.now() - lastDragAt < 300) return;      // 剛滑動完，忽略誤觸
+      const editId = e.target.dataset.edit;
+      const delId = e.target.dataset.del;
+      if (editId) {
+        openModal(products.find((p) => p.id === Number(editId)));
+      } else if (delId) {
+        requestDelete(delId);
+      } else if (e.target.closest('.swipe-bg')) {      // 點擊滑開後露出的紅色區塊
+        const item = e.target.closest('.swipe-item');
+        if (item && Number(item.dataset.offset || 0) !== 0) requestDelete(item.dataset.id);
+      }
+    });
+
+    /* ---------- 左右滑動刪除 ---------- */
+    const SWIPE_OPEN = 92;     // 滑開後停住的距離
+    const SWIPE_DELETE = 150;  // 超過此距離放開即刪除
+    const SWIPE_MAX = 230;     // 最大可拖曳距離
+
+    (function attachSwipe() {
+      const list = document.getElementById('rows');
+      let drag = null;
+
+      const reset = (item) => {
+        item.querySelector('.swipe-content').style.transform = '';
+        item.dataset.offset = '0';
+        item.classList.remove('dragging');
+      };
+      const closeOthers = (keep) => {
+        list.querySelectorAll('.swipe-item').forEach((el) => {
+          if (el !== keep && Number(el.dataset.offset || 0) !== 0) reset(el);
+        });
+      };
+
+      list.addEventListener('pointerdown', (e) => {
+        if (e.target.closest('button')) return;                 // 讓按鈕正常點擊
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        const item = e.target.closest('.swipe-item');
+        if (!item) return;
+        drag = {
+          item,
+          content: item.querySelector('.swipe-content'),
+          startX: e.clientX,
+          startY: e.clientY,
+          base: Number(item.dataset.offset || 0),
+          axis: null,
+          moved: false,
+          x: 0,
+          pointerId: e.pointerId,
+        };
+      });
+
+      list.addEventListener('pointermove', (e) => {
+        if (!drag || e.pointerId !== drag.pointerId) return;
+        const dx = e.clientX - drag.startX;
+        const dy = e.clientY - drag.startY;
+        if (!drag.axis) {
+          if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+          drag.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+          if (drag.axis === 'x') {
+            drag.item.classList.add('dragging');
+            closeOthers(drag.item);
+            try { drag.item.setPointerCapture(e.pointerId); } catch (_) {}
+          }
+        }
+        if (drag.axis !== 'x') return;
+        e.preventDefault();
+        drag.moved = true;
+        let x = drag.base + dx;
+        if (x > SWIPE_MAX) x = SWIPE_MAX;
+        if (x < -SWIPE_MAX) x = -SWIPE_MAX;
+        drag.x = x;
+        drag.content.style.transform = `translateX(${x}px)`;
+      });
+
+      const finish = (e) => {
+        if (!drag || (e && e.pointerId !== drag.pointerId)) return;
+        const d = drag;
+        drag = null;
+        d.item.classList.remove('dragging');
+        if (d.axis !== 'x' || !d.moved) return;
+        lastDragAt = Date.now();
+        if (Math.abs(d.x) >= SWIPE_DELETE) {            // 滑得夠遠 → 刪除
+          reset(d.item);
+          requestDelete(d.item.dataset.id);
+        } else if (Math.abs(d.x) >= 40) {               // 滑開 → 露出刪除區
+          const off = d.x < 0 ? -SWIPE_OPEN : SWIPE_OPEN;
+          d.content.style.transform = `translateX(${off}px)`;
+          d.item.dataset.offset = String(off);
+        } else {                                        // 歸位
+          reset(d.item);
+        }
+      };
+      list.addEventListener('pointerup', finish);
+      list.addEventListener('pointercancel', finish);
+    })();
+
+    document.getElementById('product-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const id = document.getElementById('p-id').value;
+      const payload = {
+        name: document.getElementById('p-name').value.trim(),
+        category_id: document.getElementById('p-category').value || null,
+        price: Number(document.getElementById('p-price').value),
+        stock: Number(document.getElementById('p-stock').value),
+        sizes: document.getElementById('p-sizes').value,
+        colors: document.getElementById('p-colors').value,
+        image: document.getElementById('p-image').value.trim(),
+        description: document.getElementById('p-description').value.trim(),
+        featured: document.getElementById('p-featured').checked,
+        active: document.getElementById('p-active').checked,
+      };
+      try {
+        if (id) await API.put('/api/admin/products/' + id, payload);
+        else await API.post('/api/admin/products', payload);
+        toast('已儲存商品', 'success');
+        closeModal();
+        load();
+      } catch (err) { showError(err); }
+    });
+  </script>
+</body>
+</html>

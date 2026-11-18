@@ -1,0 +1,23 @@
+{
+  "name": "aurafit-store",
+  "version": "1.0.0",
+  "description": "AURAFIT 服飾電商網站（前台 + 後台管理）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "seed": "node db.js --reset"
+  },
+  "keywords": [
+    "fashion",
+    "ecommerce",
+    "express",
+    "sqlite"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^4.22.3"
+  }
+}
